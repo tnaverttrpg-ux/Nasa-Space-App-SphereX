@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+@theme {
+  --color-space-950: #050816;
+  --color-space-900: #0a1024;
+  --color-space-800: #111a35;
+  --color-space-700: #1b2750;
+  --color-space-600: #2a3a6e;
+  --color-cyan-glow: #22d3ee;
+  --color-violet-glow: #a78bfa;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+html, body, #root { min-height: 100%; }
+body {
+  margin: 0;
+  background: radial-gradient(1200px 600px at 70% -10%, #1a1446 0%, transparent 60%),
+              radial-gradient(900px 500px at -10% 10%, #062a3a 0%, transparent 55%), #050816;
+  color: #dbe4ff;
+  font-family: var(--font-sans);
+}
+.pixelated { image-rendering: pixelated; }
+input[type="range"] { accent-color: #22d3ee; }
+:focus-visible { outline: 2px solid #22d3ee; outline-offset: 2px; }

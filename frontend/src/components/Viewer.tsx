@@ -26,6 +26,7 @@ interface Props {
   onRetryAll: () => void
   onSelect: (m: FrameMeta) => void
   onDiff: (d: DiffResult | null) => void
+  jumpTo?: { key: string; seq: number } | null   // external selection (dashboard); seq makes repeat clicks re-apply
 }
 
 const SOURCE_LABEL: Record<FrameSource, string> = { grid: 'from cache', 'cutout-cache': 'from cached cutout', download: 'downloaded from IRSA', 'shared-download': 'downloaded from IRSA (shared request)' }
@@ -38,7 +39,7 @@ const MODES: [Mode, string, typeof Film][] = [['sequence', 'Sequence', Film], ['
 const FIT_SEQ = 'lg:max-xl:max-w-[calc(100dvh-300px)] xl:w-[min(100%,calc(100cqh-26px))]'
 const FIT_CMP = 'lg:max-xl:max-w-[calc(100dvh-380px)] xl:w-[min(100%,calc(100cqh-26px))]'
 
-export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, cmap, cand, onCand, onRetry, onRetryAll, onSelect, onDiff }: Props) {
+export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, cmap, cand, onCand, onRetry, onRetryAll, onSelect, onDiff, jumpTo }: Props) {
   const ok = useMemo(() => slots.filter(s => s.status === 'ok' && s.meta).map(s => s.meta!), [slots])
   const [mode, setMode] = useState<Mode>('sequence')
   const [i, setI] = useState(0)
@@ -58,6 +59,11 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
   const nErr = slots.filter(s => s.status === 'error').length
 
   useEffect(() => { if (cur) onSelect(cur) }, [cur, onSelect])
+  useEffect(() => {
+    if (!jumpTo) return
+    const k = ok.findIndex(m => m.key === jumpTo.key)
+    if (k >= 0) { setPlaying(false); setI(k) }
+  }, [jumpTo]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!playing || ok.length < 2) return

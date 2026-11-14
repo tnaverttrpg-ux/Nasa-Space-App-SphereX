@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Crosshair, FlaskConical, RotateCw, Search, Telescope } from 'lucide-react'
+import { Crosshair, FlaskConical, RotateCw, Search, Telescope, Image as ImageIcon, LayoutDashboard } from 'lucide-react'
 import { toast, Toaster } from 'sonner'
 import { BANDS, fmtDate, getJSON, type DiffResult, type FrameMeta, type GaiaSource, type ObsResponse, type Preset } from './api'
 import InfoTip from './components/InfoTip'
 import Histogram from './components/Histogram'
+import Dashboard from './components/Dashboard'
 import ThemeSwitch from './components/ThemeSwitch'
 import Viewer, { type Slot } from './components/Viewer'
 import { useTheme } from './theme'
@@ -70,6 +71,8 @@ export default function App() {
   const [stretch, setStretch] = useState('asinh')
   const [cmap, setCmap] = useState('inferno')
   const [active, setActive] = useState<Params | null>(null)
+  const [workspace, setWorkspace] = useState<'viewer' | 'dashboard'>('viewer')
+  const [jumpTo, setJumpTo] = useState<{ key: string; seq: number } | null>(null)
   const run = useRef<AbortController | null>(null)
   const viewerRef = useRef<HTMLDivElement>(null)
 
@@ -223,6 +226,17 @@ export default function App() {
           <span className={`h-2 w-2 rounded-full ${dot}`} aria-hidden />
           <span className="text-ink-3">{demo ? 'DEMO' : 'IRSA'}</span>{status}
         </div>
+        {slots.length > 0 && (
+          // Workspace switch lives in the toolbar so it costs the image no vertical space.
+          <div role="tablist" aria-label="Workspace" className="flex h-7 shrink-0 rounded-sm border border-line-strong">
+            {([['viewer', 'Viewer', ImageIcon], ['dashboard', 'Dashboard', LayoutDashboard]] as const).map(([w, l, Icon]) => (
+              <button key={w} role="tab" aria-selected={workspace === w} onClick={() => setWorkspace(w)}
+                className={`inline-flex items-center gap-1.5 px-2.5 text-[11px] font-medium ${workspace === w ? 'bg-accent/15 text-accent-ink' : 'text-ink-3 hover:text-ink'}`}>
+                <Icon size={13} aria-hidden />{l}
+              </button>
+            ))}
+          </div>
+        )}
         <ThemeSwitch pref={theme.pref} onChange={theme.choose} />
         {phase === 'loading' && (
           <div className="basis-full" role="progressbar" aria-label="Cutouts loaded" aria-valuemin={0} aria-valuemax={slots.length} aria-valuenow={nOk + nErr}>
@@ -401,12 +415,17 @@ export default function App() {
           )}
           {(phase === 'loading' || phase === 'done' || phase === 'querying') && (slots.length > 0 || phase !== 'querying') && (
             <>
-              <div ref={viewerRef} className="scroll-mt-2 xl:flex xl:flex-1 xl:flex-col">
+              {/* Viewer stays mounted while the dashboard is shown, so playback/selection state is kept. */}
+              <div ref={viewerRef} className={`scroll-mt-2 ${workspace === 'viewer' ? 'xl:flex xl:flex-1 xl:flex-col' : 'hidden'}`}>
                 <Viewer slots={slots} demo={demo} band={active?.band} totalVisits={obsInfo?.total_in_band} gaia={gaiaOn && gaia ? gaia.filter(s => s.g < gmax) : null}
                   stretch={stretch} cmap={cmap} cand={cand} onCand={setCand}
                   onRetry={id => retry([id])} onRetryAll={() => retry(slots.filter(s => s.status === 'error').map(s => s.id))}
-                  onSelect={onSelect} onDiff={setDiff} />
+                  onSelect={onSelect} onDiff={setDiff} jumpTo={jumpTo} />
               </div>
+              {workspace === 'dashboard' && (
+                <Dashboard slots={slots} obsInfo={obsInfo} band={active?.band} demo={demo} selectedKey={sel?.key}
+                  onPick={key => setJumpTo({ key, seq: Date.now() })} />
+              )}
             </>
           )}
         </main>

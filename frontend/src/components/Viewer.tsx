@@ -162,7 +162,7 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
   const lamWarn = mode !== 'sequence' && lamA != null && lamB != null && Math.abs(lamA - lamB) > 0.02 && (
     <span role="note" className="inline-flex items-center gap-1.5 text-warn">
       <TriangleAlert size={12} className="text-warn" aria-hidden />
-      A and B sample different wavelengths at the target ({lamA.toFixed(3)} vs {lamB.toFixed(3)} µm). Brightness differences may be spectral, not temporal.
+      A and B sample different wavelengths at the target ({lamA.toFixed(3)} vs {lamB.toFixed(3)} µm): differences may be spectral, not temporal.
     </span>
   )
 
@@ -221,7 +221,7 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
       </div>
 
       {mode !== 'sequence' && ok.length > 0 && (
-        <div className="flex flex-col gap-1.5 border-b border-line px-2 py-1.5 sm:flex-row">{picker('A', A, setAKey)}{picker('B', B, setBKey)}</div>
+        <div className="flex flex-col gap-1.5 border-b border-line px-2 py-1 sm:flex-row">{picker('A', A, setAKey)}{picker('B', B, setBKey)}</div>
       )}
 
       {/* image area */}
@@ -277,9 +277,9 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
       </div>
 
       {/* legend: always visible; difference semantics shown in Difference mode */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line px-3 py-1.5 text-[11px] text-ink-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-line px-3 py-1 text-[11px] text-ink-2">
         {mode === 'diff' && (
-          <div className="flex basis-full flex-wrap items-center gap-x-5 gap-y-1">
+          <div className="flex basis-full flex-wrap items-center gap-x-5 gap-y-0.5">
             <label className="inline-flex items-center gap-2"><span className="text-ink-2">Display contrast ±</span>
               <input type="range" min={1} max={20} step={0.5} value={contrast} onChange={e => setContrast(+e.target.value)} className="w-28" aria-label="Difference display contrast in sigma" />
               <span data-testid="diff-contrast" className="w-10 font-mono text-ink">{contrast}σ</span>

@@ -2,9 +2,17 @@ export interface Observation {
   obs_id: string; band: string; access_url: string; mjd_start: number; mjd_end: number
   exptime_s: number; em_min_um: number; em_max_um: number; collection: string
   cached?: 'grid' | 'cutout' | null   // present when /observations was called with fov
+  s_region?: string | null            // archive footprint, verbatim (whole detector, ~3.5°)
+  footprint?: Footprint
+}
+export interface Footprint {
+  status: 'ok' | 'missing' | 'invalid' | 'unavailable'; vertices: [number, number][] | null; frame: string | null; reason: string | null
 }
 export type FrameSource = 'grid' | 'cutout-cache' | 'download' | 'shared-download'
-export interface ObsResponse { total_in_band: number; band_counts: Record<string, number>; observations: Observation[] }
+export interface ObsResponse {
+  total_in_band: number; band_counts: Record<string, number>; observations: Observation[]
+  target?: { ra: number; dec: number }; all_observations?: Observation[]   // every observation in the band (include_all)
+}
 export interface FrameMeta {
   key: string; hdu?: string; date_obs: string | null; date_beg?: string; date_end?: string
   mjd: number | null; decimal_year: number | null; detector?: number; obsid?: string; bunit?: string

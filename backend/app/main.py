@@ -118,10 +118,11 @@ def resolve(name: str = Query(..., min_length=1, max_length=100)):
 @app.get("/api/observations")
 def observations(ra: float = RA, dec: float = DEC, band: str = Query("D3", pattern="^D[1-6]$"),
                  collection: str = Query("spherex_dr1"), limit: int = Query(12, ge=2, le=48),
-                 fov: float | None = Query(None, ge=0.02, le=0.5, description="If given, mark observations already cached")):
+                 fov: float | None = Query(None, ge=0.02, le=0.5, description="If given, mark observations already cached"),
+                 include_all: bool = Query(False, description="Also return every observation in the band (with footprints)")):
     if collection not in archive.COLLECTIONS:
         raise HTTPException(400, f"collection must be one of {archive.COLLECTIONS}")
-    out = archive.query_observations(ra, dec, band, collection, limit)
+    out = archive.query_observations(ra, dec, band, collection, limit, include_all=include_all)
     if fov is not None:
         for o in out["observations"]:
             o["cached"] = ("grid" if (GRIDS / f"{_grid_key(o['access_url'], ra, dec, fov)}.json").exists()

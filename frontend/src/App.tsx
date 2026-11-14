@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Crosshair, FlaskConical, RotateCw, Search, Telescope, Image as ImageIcon, LayoutDashboard } from 'lucide-react'
+import { Crosshair, FlaskConical, RotateCw, Search, Telescope, Image as ImageIcon, LayoutDashboard, Map as MapIcon } from 'lucide-react'
 import { toast, Toaster } from 'sonner'
-import { BANDS, fmtDate, getJSON, type DiffResult, type FrameMeta, type GaiaSource, type ObsResponse, type Preset } from './api'
+import { BANDS, fmtDate, getJSON, type DiffResult, type Observation, type FrameMeta, type GaiaSource, type ObsResponse, type Preset } from './api'
 import InfoTip from './components/InfoTip'
 import Histogram from './components/Histogram'
 import PixelInspector, { type PixelSel } from './components/PixelInspector'
 import Dashboard from './components/Dashboard'
+import SkyMap from './components/SkyMap'
 import ThemeSwitch from './components/ThemeSwitch'
 import Viewer, { type Slot } from './components/Viewer'
 import { useTheme } from './theme'
@@ -72,7 +73,8 @@ export default function App() {
   const [stretch, setStretch] = useState('asinh')
   const [cmap, setCmap] = useState('inferno')
   const [active, setActive] = useState<Params | null>(null)
-  const [workspace, setWorkspace] = useState<'viewer' | 'dashboard'>('viewer')
+  const [workspace, setWorkspace] = useState<'viewer' | 'dashboard' | 'map'>('viewer')
+  const [mapRequest, setMapRequest] = useState<string | null>(null)   // observation picked on the map, loading
   const [jumpTo, setJumpTo] = useState<{ key: string; seq: number } | null>(null)
   const [pixelSel, setPixelSel] = useState<PixelSel | null>(null)
   const [clearPixel, setClearPixel] = useState(0)
@@ -95,18 +97,18 @@ export default function App() {
 
   const patch = (id: string, s: Partial<Slot>) => setSlots(v => v.map(x => (x.id === id ? { ...x, ...s } : x)))
 
-  const loadFrame = useCallback(async (slot: Slot, q: Params, signal: AbortSignal) => {
-    if (signal.aborted) return false
+  const loadFrame = useCallback(async (slot: Slot, q: Params, signal: AbortSignal): Promise<FrameMeta | null> => {
+    if (signal.aborted) return null
     patch(slot.id, { status: 'loading', error: undefined })
     try {
       const m = await getJSON<FrameMeta>('frame', { url: slot.id, ra: q.ra, dec: q.dec, fov: q.fov, exptime_s: slot.exptime ?? '' }, 240_000, signal)
       // Stale guard: a newer search may own slots with the same id (same file, different FOV) — never patch them.
-      if (signal.aborted) return false
+      if (signal.aborted) return null
       patch(slot.id, { status: 'ok', meta: m, mjd: m.mjd ?? slot.mjd, source: m.timing?.source })
-      return true
+      return m
     } catch (e) {
       if (!signal.aborted && (e as Error).message !== 'cancelled') patch(slot.id, { status: 'error', error: (e as Error).message })
-      return false
+      return null
     }
   }, [])
 
@@ -121,7 +123,7 @@ export default function App() {
     setPhase('querying'); setErr('')
     let r: ObsResponse
     try {
-      r = await getJSON<ObsResponse>('observations', { ra: q.ra, dec: q.dec, band: q.band, limit: q.n, fov: q.fov }, 120_000, ctl.signal)
+      r = await getJSON<ObsResponse>('observations', { ra: q.ra, dec: q.dec, band: q.band, limit: q.n, fov: q.fov, include_all: 'true' }, 120_000, ctl.signal)
     } catch (e) {
       if ((e as Error).message === 'cancelled') return
       setErr((e as Error).message); setPhase('error')
@@ -180,7 +182,7 @@ export default function App() {
     if (!fresh.length) return
     fresh.forEach(id => retryingRef.current.add(id)); setRetrying(retryingRef.current.size)
     const signal = (run.current ??= new AbortController()).signal  // same cancellation as the search it belongs to
-    let res: boolean[] = []
+    let res: (FrameMeta | null)[] = []
     try {
       res = await Promise.all(slots.filter(s => fresh.includes(s.id)).map(s => loadFrame(s, active, signal)))
     } finally {
@@ -190,6 +192,19 @@ export default function App() {
     const bad = res.filter(x => !x).length
     if (bad) toast.error(`${bad} of ${fresh.length} retried observation(s) still failing`, { description: 'IRSA may be busy. Try again shortly.' })
     else toast.success(`${fresh.length} observation(s) recovered`, { duration: 2500 })
+  }
+
+  const pickObservation = async (o: Observation) => {
+    if (!active) return
+    const have = slots.find(s => s.id === o.access_url)
+    if (have?.meta) { setMapRequest(null); setJumpTo({ key: have.meta.key, seq: Date.now() }); return }
+    setMapRequest(o.access_url)
+    if (have && (have.status === 'loading' || have.status === 'pending')) return        // already on its way
+    const slot: Slot = have ?? { id: o.access_url, mjd: o.mjd_start, label: `${o.obs_id} · MJD ${o.mjd_start.toFixed(3)}`, status: 'pending', exptime: o.exptime_s, cached: o.cached ?? null }
+    if (!have) setSlots(v => [...v, slot].sort((a, b) => (a.mjd ?? 0) - (b.mjd ?? 0)))
+    const signal = (run.current ??= new AbortController()).signal                       // cancelled by a new search
+    const m = await loadFrame(slot, active, signal)
+    if (m && !signal.aborted) { setJumpTo({ key: m.key, seq: Date.now() }); setMapRequest(r => (r === o.access_url ? null : r)) }
   }
 
   const resolveName = async () => {
@@ -257,7 +272,7 @@ export default function App() {
         {slots.length > 0 && (
           // Workspace switch lives in the toolbar so it costs the image no vertical space.
           <div role="tablist" aria-label="Workspace" className="flex h-7 shrink-0 rounded-sm border border-line-strong">
-            {([['viewer', 'Viewer', ImageIcon], ['dashboard', 'Dashboard', LayoutDashboard]] as const).map(([w, l, Icon]) => (
+            {([['viewer', 'Viewer', ImageIcon], ['dashboard', 'Dashboard', LayoutDashboard], ['map', 'Sky map', MapIcon]] as const).map(([w, l, Icon]) => (
               <button key={w} role="tab" aria-selected={workspace === w} onClick={() => setWorkspace(w)}
                 className={`inline-flex items-center gap-1.5 px-2.5 text-[11px] font-medium ${workspace === w ? 'bg-accent/15 text-accent-ink' : 'text-ink-3 hover:text-ink'}`}>
                 <Icon size={13} aria-hidden />{l}
@@ -449,6 +464,11 @@ export default function App() {
                   stretch={stretch} cmap={cmap} cand={cand} onCand={setCand}
                   onRetry={id => retry([id])} onRetryAll={() => retry(slots.filter(s => s.status === 'error').map(s => s.id))}
                   onSelect={onSelect} onDiff={setDiff} jumpTo={jumpTo} onPixel={setPixelSel} clearPixel={clearPixel} />
+              </div>
+              {/* Mounted while hidden so its view and toggles survive switching workspaces. */}
+              <div className={workspace === 'map' ? '' : 'hidden'}>
+                <SkyMap obsInfo={obsInfo} slots={slots} band={active?.band} fov={active?.fov} demo={demo}
+                  selectedUrl={sel?.source_url} requestedUrl={mapRequest} onPick={pickObservation} />
               </div>
               {workspace === 'dashboard' && (
                 <Dashboard slots={slots} obsInfo={obsInfo} band={active?.band} demo={demo} selectedKey={sel?.key}

@@ -40,11 +40,18 @@ class ArchiveError(Exception):
         self.status = status
 
 
-def _sia_rows(ra, dec, collection):
-    key = hashlib.sha1(f"{ra:.6f}|{dec:.6f}|{collection}".encode()).hexdigest()[:20]
-    f = CACHE / "sia" / f"{key}.json"
-    if f.exists():
-        return json.loads(f.read_text())
+# Archive-search cache format. v1 = plain list of rows (no footprints). v2 = {"version": 2, "rows": [...]} with the
+# original SIA2 s_region kept verbatim. v1 files are never deleted: they are the fallback when IRSA is unreachable.
+SIA_CACHE_VERSION = 2
+
+
+def _sia_file(ra, dec, collection, version):
+    base = f"{ra:.6f}|{dec:.6f}|{collection}"
+    key = hashlib.sha1((base if version == 1 else f"v{version}|{base}").encode()).hexdigest()[:20]
+    return CACHE / "sia" / f"{key}.json"
+
+
+def _query_sia(ra, dec, collection):
     sia = pyvo.dal.SIA2Service(SIA_URL)
     # A tiny circle = "images that contain this position".
     t = sia.search(pos=(ra, dec, 0.0005), collection=collection).to_table()
@@ -52,6 +59,7 @@ def _sia_rows(ra, dec, collection):
     for r in t:
         if str(r["dataproduct_subtype"]) != "science":
             continue
+        sreg = r["s_region"] if "s_region" in t.colnames else None
         rows.append({
             "obs_id": str(r["obs_id"]),
             "band": str(r["energy_bandpassname"]).replace("SPHEREx-", ""),
@@ -62,13 +70,91 @@ def _sia_rows(ra, dec, collection):
             "em_min_um": float(r["em_min"]) * 1e6,
             "em_max_um": float(r["em_max"]) * 1e6,
             "collection": str(r["obs_collection"]),
+            "s_region": None if sreg is None or np.ma.is_masked(sreg) else str(sreg),
         })
     rows.sort(key=lambda x: x["mjd_start"])
-    f.write_text(json.dumps(rows))
     return rows
 
 
-def query_observations(ra, dec, band, collection, limit, timeout=90):
+def _sia_rows(ra, dec, collection):
+    f2 = _sia_file(ra, dec, collection, SIA_CACHE_VERSION)
+    if f2.exists():
+        try:
+            data = json.loads(f2.read_text())
+            if isinstance(data, dict) and data.get("version") == SIA_CACHE_VERSION:
+                return data["rows"]
+        except (ValueError, KeyError):
+            pass                                            # unreadable v2 file: re-query below (it is overwritten)
+    try:
+        rows = _query_sia(ra, dec, collection)
+    except Exception as e:
+        f1 = _sia_file(ra, dec, collection, 1)
+        if f1.exists():                                     # old cache without footprints: still usable, say why
+            log.warning("IRSA unreachable for footprint refresh (%s); using v1 search cache without footprints", e)
+            return [{**r, "s_region": None, "footprint_unavailable": "cached search predates footprints and IRSA could not be reached"}
+                    for r in json.loads(f1.read_text())]
+        raise
+    tmp = f2.with_name(f2.name + f".{threading.get_ident()}.part")
+    tmp.write_text(json.dumps({"version": SIA_CACHE_VERSION, "rows": rows}))
+    tmp.replace(f2)
+    return rows
+
+
+def parse_s_region(s_region, unavailable=None):
+    """ObsCore s_region -> {"status": ok|missing|invalid|unavailable, "vertices": [[ra, dec], ...], "frame", "reason"}.
+    Only POLYGON in ICRS (explicit, or omitted as ObsCore mandates) is accepted. Vertices are returned exactly as given
+    (RA normalised to [0, 360)); the closing duplicate vertex is dropped. Nothing is approximated or invented."""
+    if unavailable:
+        return {"status": "unavailable", "vertices": None, "frame": None, "reason": unavailable}
+    if s_region is None or not str(s_region).strip():
+        return {"status": "missing", "vertices": None, "frame": None, "reason": "no s_region in the archive record"}
+    bad = lambda why: {"status": "invalid", "vertices": None, "frame": None, "reason": why}
+    tok = str(s_region).replace(",", " ").split()
+    if tok[0].upper() != "POLYGON":
+        return bad(f"unsupported region shape '{tok[0]}'")
+    rest, frame = tok[1:], "ICRS"
+    if rest and not _is_number(rest[0]):
+        frame = rest[0].upper()
+        rest = rest[1:]
+        if frame not in ("ICRS", "J2000", "FK5"):
+            return bad(f"unsupported frame '{frame}'")
+    if len(rest) % 2 or not all(_is_number(t) for t in rest):
+        return bad("coordinates are not RA/Dec number pairs")
+    v = [[float(rest[i]), float(rest[i + 1])] for i in range(0, len(rest), 2)]
+    if len(v) > 1 and v[0] == v[-1]:
+        v = v[:-1]                                          # closed polygon: drop repeated first vertex
+    if len(v) < 3 or len(v) > 100:
+        return bad(f"{len(v)} vertices (need 3-100)")
+    if not all(np.isfinite(c) for p in v for c in p):
+        return bad("non-finite coordinate")
+    if any(not (-90 <= d <= 90) for _, d in v) or any(not (0 <= r <= 360) for r, _ in v):
+        return bad("coordinate out of range")
+    v = [[r % 360.0, d] for r, d in v]
+    # non-degenerate: positive area on the tangent plane at the vertex centroid
+    xyz = np.array([[np.cos(np.radians(d)) * np.cos(np.radians(r)), np.cos(np.radians(d)) * np.sin(np.radians(r)), np.sin(np.radians(d))] for r, d in v])
+    c = xyz.mean(0); c /= np.linalg.norm(c)
+    e = np.cross([0, 0, 1], c); e = e / np.linalg.norm(e) if np.linalg.norm(e) > 1e-12 else np.array([1.0, 0, 0]); nvec = np.cross(c, e)
+    px, py = (xyz @ e) / (xyz @ c), (xyz @ nvec) / (xyz @ c)
+    area = 0.5 * abs(np.dot(px, np.roll(py, -1)) - np.dot(py, np.roll(px, -1)))
+    if not np.all(xyz @ c > 0) or area < 1e-10:
+        return bad("degenerate polygon (zero area)")
+    return {"status": "ok", "vertices": v, "frame": frame, "reason": None}
+
+
+def _is_number(t):
+    try:
+        float(t)
+        return True
+    except ValueError:
+        return False
+
+
+def _with_footprint(r):
+    return {**{k: v for k, v in r.items() if k != "footprint_unavailable"},
+            "footprint": parse_s_region(r.get("s_region"), r.get("footprint_unavailable"))}
+
+
+def query_observations(ra, dec, band, collection, limit, timeout=90, include_all=False):
     try:
         rows = _pool.submit(_sia_rows, ra, dec, collection).result(timeout=timeout)
     except FutTimeout:
@@ -76,11 +162,14 @@ def query_observations(ra, dec, band, collection, limit, timeout=90):
     except Exception as e:  # network / DAL errors
         raise ArchiveError(f"IRSA SIA2 query failed: {e}")
     counts = {b: sum(r["band"] == b for r in rows) for b in BANDS}
-    sel = [r for r in rows if r["band"] == band]
-    total = len(sel)
-    if total > limit:
-        sel = [sel[i] for i in nested_sample(total, limit)]
-    return {"total_in_band": total, "band_counts": counts, "observations": sel}
+    in_band = [r for r in rows if r["band"] == band]
+    total = len(in_band)
+    sel = [in_band[i] for i in nested_sample(total, limit)] if total > limit else in_band
+    out = {"total_in_band": total, "band_counts": counts, "observations": [_with_footprint(r) for r in sel],
+           "target": {"ra": ra, "dec": dec}}
+    if include_all:                                          # every observation in the band (for the sky map)
+        out["all_observations"] = [_with_footprint(r) for r in in_band]
+    return out
 
 
 def nested_sample(total, limit):

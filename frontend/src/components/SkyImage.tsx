@@ -22,10 +22,12 @@ interface Props {
   onView?: (v: View) => void
   underlay?: string      // image drawn beneath `src` (difference-over-A blending)
   opacity?: number       // opacity of `src` over the underlay (visual aid only)
+  onInspect?: (x: number, y: number) => void   // click-to-inspect: grid pixel in display coords (x right, y down)
+  marker?: { x: number; y: number } | null      // selected pixel (same grid for every panel)
 }
 
 // Overlays are drawn on the image (always on a black well), so they use fixed colours in both themes.
-const OV = { cross: '#e8e2d6', gaia: '#4ade80', candA: '#f0566c', candB: '#5b8cf0', sel: '#ffffff', label: '#d8d4ca', halo: '#000000' }
+const OV = { pick: '#ffd27a', cross: '#e8e2d6', gaia: '#4ade80', candA: '#f0566c', candB: '#5b8cf0', sel: '#ffffff', label: '#d8d4ca', halo: '#000000' }
 
 const kindStyle: Record<ImageKind, [string, string]> = {
   measured: ['Measured', 'text-ink'],
@@ -35,7 +37,7 @@ const kindStyle: Record<ImageKind, [string, string]> = {
 
 /** Square sky image. SVG overlays share the image pixel grid (viewBox = native size). Labels sit outside the pixels. */
 export default function SkyImage({ src, alt, kind, label, caption, gaia, year, candidates, selected, onPick, crosshair = true, compact = false, className = '',
-  view = FIT, onView, underlay, opacity = 1 }: Props) {
+  view = FIT, onView, underlay, opacity = 1, onInspect, marker }: Props) {
   const [n, setN] = useState(0)
   const [failed, setFailed] = useState(false)
   const [dragging, setDragging] = useState(false)
@@ -96,6 +98,14 @@ export default function SkyImage({ src, alt, kind, label, caption, gaia, year, c
     // A drag that moved more than ~3 px is not a click (keeps candidate markers from being picked by panning).
     onClickCapture: (e: React.MouseEvent) => { if (moved.current) { e.stopPropagation(); e.preventDefault(); moved.current = false } },
     onDoubleClick: () => onView(FIT),
+    // A click (not a drag: drags are cancelled in onClickCapture) selects the grid pixel under the cursor, accounting
+    // for zoom/pan: image fraction = (box fraction - offset) / scale.
+    onClick: (e: React.MouseEvent) => {
+      if (!onInspect || !n) return
+      const r = box.current!.getBoundingClientRect(), v = viewRef.current
+      const gx = Math.floor((((e.clientX - r.left) / r.width - v.x) / v.s) * n), gy = Math.floor((((e.clientY - r.top) / r.height - v.y) / v.s) * n)
+      if (gx >= 0 && gy >= 0 && gx < n && gy < n) onInspect(gx, gy)
+    },
     onKeyDown: (e: React.KeyboardEvent) => {
       const v = viewRef.current, step = 0.1 / v.s
       const act: Record<string, () => View> = {
@@ -137,7 +147,7 @@ export default function SkyImage({ src, alt, kind, label, caption, gaia, year, c
             ))}
             {candidates?.map((cd, i) => (
               // Mouse shortcut only; the keyboard-accessible control is the candidate table.
-              <g key={i} className="pointer-events-auto cursor-pointer" onClick={() => onPick?.(i)}>
+              <g key={i} className="pointer-events-auto cursor-pointer" onClick={e => { e.stopPropagation(); onPick?.(i) }}>
                 <rect x={cd.x - 1.5} y={cd.y - 1.5} width={4} height={4} fill="transparent"
                   stroke={selected === i ? OV.sel : cd.sign === 'brighter_in_A' ? OV.candA : OV.candB}
                   strokeWidth={(n / (selected === i ? 110 : 260)) * k} strokeDasharray={selected === i ? undefined : `${0.6 * k} ${0.4 * k}`} />
@@ -145,6 +155,16 @@ export default function SkyImage({ src, alt, kind, label, caption, gaia, year, c
                   fill={selected === i ? OV.sel : OV.label} paintOrder="stroke" stroke={OV.halo} strokeWidth={(n / 220) * k}>{i + 1}</text>
               </g>
             ))}
+            {marker && (
+              <g data-testid="pixel-marker" data-x={marker.x} data-y={marker.y} fill="none">
+                <rect x={marker.x} y={marker.y} width={1} height={1} stroke={OV.halo} strokeWidth={3 * (n / 400) * k} />
+                <rect x={marker.x} y={marker.y} width={1} height={1} stroke={OV.pick} strokeWidth={1.4 * (n / 400) * k} />
+                {[[-1, 0], [1, 0], [0, -1], [0, 1]].map(([dx, dy]) => (
+                  <line key={`${dx}${dy}`} x1={marker.x + 0.5 + dx * (0.5 + 1.2 * k)} y1={marker.y + 0.5 + dy * (0.5 + 1.2 * k)}
+                    x2={marker.x + 0.5 + dx * (0.5 + 4 * k)} y2={marker.y + 0.5 + dy * (0.5 + 4 * k)} stroke={OV.pick} strokeWidth={1.2 * (n / 400) * k} />
+                ))}
+              </g>
+            )}
           </svg>
         )}
         </div>

@@ -4,6 +4,7 @@ import { toast, Toaster } from 'sonner'
 import { BANDS, fmtDate, getJSON, type DiffResult, type FrameMeta, type GaiaSource, type ObsResponse, type Preset } from './api'
 import InfoTip from './components/InfoTip'
 import Histogram from './components/Histogram'
+import PixelInspector, { type PixelSel } from './components/PixelInspector'
 import Dashboard from './components/Dashboard'
 import ThemeSwitch from './components/ThemeSwitch'
 import Viewer, { type Slot } from './components/Viewer'
@@ -73,6 +74,8 @@ export default function App() {
   const [active, setActive] = useState<Params | null>(null)
   const [workspace, setWorkspace] = useState<'viewer' | 'dashboard'>('viewer')
   const [jumpTo, setJumpTo] = useState<{ key: string; seq: number } | null>(null)
+  const [pixelSel, setPixelSel] = useState<PixelSel | null>(null)
+  const [clearPixel, setClearPixel] = useState(0)
   const run = useRef<AbortController | null>(null)
   const headerRef = useRef<HTMLElement>(null)
   const [headerH, setHeaderH] = useState(44)
@@ -445,7 +448,7 @@ export default function App() {
                 <Viewer slots={slots} demo={demo} band={active?.band} totalVisits={obsInfo?.total_in_band} gaia={gaiaOn && gaia ? gaia.filter(s => s.g < gmax) : null}
                   stretch={stretch} cmap={cmap} cand={cand} onCand={setCand}
                   onRetry={id => retry([id])} onRetryAll={() => retry(slots.filter(s => s.status === 'error').map(s => s.id))}
-                  onSelect={onSelect} onDiff={setDiff} jumpTo={jumpTo} />
+                  onSelect={onSelect} onDiff={setDiff} jumpTo={jumpTo} onPixel={setPixelSel} clearPixel={clearPixel} />
               </div>
               {workspace === 'dashboard' && (
                 <Dashboard slots={slots} obsInfo={obsInfo} band={active?.band} demo={demo} selectedKey={sel?.key}
@@ -457,6 +460,7 @@ export default function App() {
 
         {/* right inspector */}
         <aside aria-label="Inspector" className="min-w-0 border-t border-line bg-panel lg:col-start-2 xl:col-start-auto xl:border-l xl:border-t-0 xl:overflow-y-auto">
+          {slots.length > 0 && <PixelInspector sel={pixelSel} onClear={() => { setPixelSel(null); setClearPixel(c => c + 1) }} />}
           {sel ? <MeasuredPanel m={sel} /> : (
             <div className={section}><h2 className={heading}>Frame</h2><p className="text-[11px] text-ink-3">Metadata for the displayed observation appears here.</p></div>
           )}

@@ -7,8 +7,11 @@ import io
 import json
 import threading
 import time
+from collections import OrderedDict
 
 import numpy as np
+from astropy.io import fits
+from astropy.wcs import WCS
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -191,6 +194,70 @@ def frame_stats(key: str):
     (keys are versioned). No browser caching: results also depend on the statistics method, which can change
     without the grid key changing; the frontend keeps its own per-session cache."""
     return JSONResponse(_stats_cached(key), headers={"Cache-Control": "no-cache"})
+
+
+# ---- pixel inspector ---------------------------------------------------------------------------------------------
+# Bounded LRU of PARSED cutouts (arrays + WCS), not open file handles: files are closed immediately (no Windows locks),
+# and the key includes mtime/size so a replaced/deleted file can never serve stale data. Never downloads.
+CUTOUT_CACHE_MAX = 8
+_cutouts: "OrderedDict[tuple, dict]" = OrderedDict()
+_cutouts_lock = threading.Lock()
+
+
+def _native_entry(meta):
+    g, url = meta.get("grid"), meta.get("source_url")
+    if not g or not url:
+        return None
+    path = archive.cached_cutout(url, g["ra"], g["dec"], _cutout_size(g["fov"]))   # local cache only
+    if path is None:
+        return None
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    ck = (str(path), st.st_mtime_ns, st.st_size)
+    with _cutouts_lock:
+        if ck in _cutouts:
+            _cutouts.move_to_end(ck)
+            return _cutouts[ck]
+    raw = archive.read_cached(path)          # validates; a corrupt file is removed and reported as unavailable
+    if raw is None:
+        return None
+    try:
+        with fits.open(io.BytesIO(raw)) as h:
+            sci = fitsproc.science_hdu(h)
+            hdr = sci.header
+            entry = {"wcs": WCS(hdr).celestial, "shape": tuple(sci.data.shape), "image": np.array(sci.data, dtype="float32"),
+                     "det": fitsproc.detector_linear(hdr), "flags": None, "planes": {}}
+            if "FLAGS" in h and h["FLAGS"].data is not None:
+                fh = h["FLAGS"].header
+                entry["flags"] = np.array(h["FLAGS"].data, dtype="int64")
+                entry["planes"] = {str(fh[k]).strip(): int(k[4:]) for k in fh if k.startswith("MSKN") and k[4:].isdigit()}
+    except Exception as e:
+        archive.log.warning("pixel inspector: cannot parse %s: %s", path.name, e)
+        return None
+    with _cutouts_lock:
+        _cutouts[ck] = entry
+        while len(_cutouts) > CUTOUT_CACHE_MAX:
+            _cutouts.popitem(last=False)
+    return entry
+
+
+@app.get("/api/frame/{key}/pixel")
+def frame_pixel(key: str, x: int = Query(..., ge=0, description="grid column, display orientation"),
+                y: int = Query(..., ge=0, description="grid row from the top (north up)")):
+    """One aligned-grid pixel traced to sky coordinates, the original native FITS pixel (value + FLAGS) and the
+    detector pixel. Grid values are interpolated; native values are the original IMAGE pixel; nothing is invented."""
+    arr, foot, meta, offdet = _load(key)
+    rows, cols = arr.shape
+    if x >= cols or y >= rows:
+        raise HTTPException(422, f"pixel ({x}, {y}) is outside the {cols}x{rows} grid")
+    demo = bool(meta.get("demo"))
+    native = None if demo else _native_entry(meta)
+    out = fitsproc.inspect_pixel(x, y, arr, foot, offdet, None if demo else meta.get("grid"), native)
+    out.update({"key": key, "demo": demo, "unit": meta.get("bunit") or ("arbitrary" if demo else "unknown"), "grid_size": [rows, cols],
+                "grid_quantity": "aligned-grid surface brightness (interpolated)", "native_quantity": "original FITS IMAGE pixel (uncalibrated for photometry)"})
+    return JSONResponse(out, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/diff")

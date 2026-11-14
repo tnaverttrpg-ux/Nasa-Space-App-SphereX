@@ -53,30 +53,93 @@ def science_hdu(hdul):
     raise ValueError("no 2-D science image with a celestial WCS found")
 
 
+def detector_linear(hdr):
+    """Native (0-based) cutout pixel -> 0-based active detector pixel, from the pipeline's alternate WCS 'A'.
+    Applied exactly as declared: a pure LINEAR offset. Not via astropy WCS(key="A"), which would also attach the
+    header's (key-less) SIP distortion terms and shift the result by ~10-20 px. Returns f(x, y) -> (dx, dy), or None
+    when the header does not declare 'A' in that exact form."""
+    try:
+        if not str(hdr.get("WCSNAMEA", "")).strip().lower().startswith("0-based active pixel"):
+            return None
+        if any(str(hdr.get(f"CTYPE{i}A", "")).strip().upper() != "LINEAR" for i in (1, 2)) or \
+           any(f"PC{i}_{j}A" in hdr or f"CD{i}_{j}A" in hdr for i in (1, 2) for j in (1, 2)):
+            return None
+        c = [(float(hdr[f"CRPIX{i}A"]), float(hdr.get(f"CDELT{i}A", 1.0)), float(hdr.get(f"CRVAL{i}A", 0.0))) for i in (1, 2)]
+    except Exception:
+        return None
+    return lambda x, y: ((x + 1 - c[0][0]) * c[0][1] + c[0][2], (y + 1 - c[1][0]) * c[1][1] + c[1][2])
+
+
 def detector_position(hdr, wcs, ra, dec, shape):
     """Target position on the detector from the pipeline's alternate WCS 'A' ("0-based active pixel coordinates").
     Returns None unless that WCS is present and the whole cutout maps inside the active area (so the value is exact,
     not an estimate)."""
     try:
-        if not str(hdr.get("WCSNAMEA", "")).strip().lower().startswith("0-based active pixel"):
+        lin = detector_linear(hdr)
+        if lin is None:
             return None
-        # Apply 'A' exactly as declared: a pure LINEAR offset. Not via astropy WCS(key="A"), which would also attach the
-        # header's (key-less) SIP distortion terms and shift the result by ~10-20 px.
-        if any(str(hdr.get(f"CTYPE{i}A", "")).strip().upper() != "LINEAR" for i in (1, 2)) or \
-           any(f"PC{i}_{j}A" in hdr or f"CD{i}_{j}A" in hdr for i in (1, 2) for j in (1, 2)):
-            return None
-        lin = lambda p, i: (p + 1 - float(hdr[f"CRPIX{i}A"])) * float(hdr.get(f"CDELT{i}A", 1.0)) + float(hdr.get(f"CRVAL{i}A", 0.0))
         ny, nx = shape
         n = DETECTOR_ACTIVE_PX
-        cx0, cx1, cy0, cy1 = lin(0, 1), lin(nx - 1, 1), lin(0, 2), lin(ny - 1, 2)
+        (cx0, cy0), (cx1, cy1) = lin(0, 0), lin(nx - 1, ny - 1)
         x, y = wcs.world_to_pixel_values(ra, dec)
-        dx, dy = lin(float(x), 1), lin(float(y), 2)
+        dx, dy = lin(float(x), float(y))
         vals = [cx0, cx1, cy0, cy1, dx, dy]
         if not all(np.isfinite(vals)) or min(vals) < 0 or max(vals) > n - 1:
             return None
         return {"x": round(dx, 1), "y": round(dy, 1), "edge_px": round(min(dx, dy, n - 1 - dx, n - 1 - dy), 1), "active_size": n}
     except Exception:
         return None
+
+
+def inspect_pixel(grid_x, grid_y, arr, foot, offdet, grid, native):
+    """One aligned-grid pixel, traced back to the original data. grid_x/grid_y: display coordinates (x right, y down,
+    north up). `grid` = {"ra","dec","fov"} or None (synthetic). `native` = cutout entry from the cutout cache or None.
+    Nothing is clamped, rounded into range or filled: absent quantities are None with a reason."""
+    n_rows, n_cols = arr.shape
+    row = n_rows - 1 - grid_y                                   # stored grids are in FITS row order (row 0 = south)
+    v = float(arr[row, grid_x])
+    off = bool(offdet[row, grid_x]) if offdet is not None else False
+    finite = np.isfinite(v)
+    state = "off_detector" if off else "valid" if finite and bool(foot[row, grid_x]) else "masked_or_invalid"
+    out = {"grid": {"x": int(grid_x), "y": int(grid_y), "value": v if finite else None, "value_finite": bool(finite), "state": state},
+           "sky": None, "native": {"available": False, "reason": None}, "detector": None}
+    if grid is None:
+        out["native"]["reason"] = "synthetic demo frame: no sky coordinates or original data"
+        return out
+    gw, _ = grid_wcs(grid["ra"], grid["dec"], grid["fov"])
+    ra, dec = (float(t) for t in gw.pixel_to_world_values(grid_x, row))
+    out["sky"] = {"ra": ra, "dec": dec}
+    if native is None:
+        out["native"]["reason"] = "original cutout not in the local cache (grid values only)"
+        return out
+    with np.errstate(all="ignore"):
+        nx, ny = (float(t) for t in native["wcs"].world_to_pixel_values(ra, dec))   # distortion-aware (SIP)
+    if not (np.isfinite(nx) and np.isfinite(ny)):
+        out["native"]["reason"] = "sky position could not be mapped into the native image"
+        return out
+    lin = native["det"]
+    if lin is not None:
+        dx, dy = lin(nx, ny)
+        n = DETECTOR_ACTIVE_PX
+        on_det = -0.5 <= dx <= n - 0.5 and -0.5 <= dy <= n - 0.5
+        out["detector"] = {"x": round(dx, 2), "y": round(dy, 2), "on_detector": on_det,
+                           "ix": int(np.floor(dx + 0.5)) if on_det else None, "iy": int(np.floor(dy + 0.5)) if on_det else None, "active_size": n}
+    ix, iy = int(np.floor(nx + 0.5)), int(np.floor(ny + 0.5))   # native pixel whose area contains the point
+    h, w = native["shape"]
+    if not (0 <= ix < w and 0 <= iy < h):
+        out["native"]["reason"] = ("location is outside the detector: no native pixel exists" if off or (out["detector"] and not out["detector"]["on_detector"])
+                                   else "location is outside the retrieved cutout: no native pixel available")
+        out["native"].update({"x": round(nx, 2), "y": round(ny, 2)})
+        return out
+    nv = float(native["image"][iy, ix])
+    fl = None if native["flags"] is None else int(native["flags"][iy, ix])
+    names = None if fl is None else [nm for nm, b in sorted(native["planes"].items(), key=lambda kv: kv[1]) if fl & (1 << b)]
+    out["native"] = {"available": True, "reason": None, "x": round(nx, 2), "y": round(ny, 2), "ix": ix, "iy": iy,
+                     "value": nv if np.isfinite(nv) else None, "value_finite": bool(np.isfinite(nv)),
+                     "flags": fl, "flag_names": names,
+                     "masked_by_app": None if names is None else bool(set(names) & BAD_PLANES),
+                     "flags_available": fl is not None, "cutout_shape": [int(h), int(w)]}
+    return out
 
 
 def _qa_str(hdr, key):

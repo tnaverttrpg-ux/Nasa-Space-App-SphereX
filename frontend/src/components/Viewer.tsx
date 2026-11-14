@@ -28,6 +28,8 @@ interface Props {
   onSelect: (m: FrameMeta) => void
   onDiff: (d: DiffResult | null) => void
   jumpTo?: { key: string; seq: number } | null   // external selection (dashboard); seq makes repeat clicks re-apply
+  onPixel?: (p: { key: string; x: number; y: number; label: string } | null) => void   // pixel inspector target
+  clearPixel?: number                             // bump to clear the selected pixel from outside
 }
 
 const SOURCE_LABEL: Record<FrameSource, string> = { grid: 'from cache', 'cutout-cache': 'from cached cutout', download: 'downloaded from IRSA', 'shared-download': 'downloaded from IRSA (shared request)' }
@@ -40,7 +42,7 @@ const MODES: [Mode, string, typeof Film][] = [['sequence', 'Sequence', Film], ['
 const FIT_SEQ = 'lg:max-xl:max-w-[calc(100dvh-300px)] xl:w-[min(100%,calc(100cqh-26px))]'
 const FIT_CMP = 'lg:max-xl:max-w-[calc(100dvh-380px)] xl:w-[min(100%,calc(100cqh-26px))]'
 
-export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, cmap, cand, onCand, onRetry, onRetryAll, onSelect, onDiff, jumpTo }: Props) {
+export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, cmap, cand, onCand, onRetry, onRetryAll, onSelect, onDiff, jumpTo, onPixel, clearPixel }: Props) {
   const ok = useMemo(() => slots.filter(s => s.status === 'ok' && s.meta).map(s => s.meta!), [slots])
   const [mode, setMode] = useState<Mode>('sequence')
   const [i, setI] = useState(0)
@@ -54,6 +56,9 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
   const [contrast, setContrast] = useState(5)          // difference DISPLAY range ±Nσ (detection threshold is separate)
   const [opacity, setOpacity] = useState(1)            // difference over observation A: visual aid only
   const diffCtl = useRef<AbortController | null>(null)
+  // Selected pixel (grid display coords) + which image it belongs to. 'seq' follows the displayed sequence frame, so
+  // stepping frames inspects the SAME sky pixel in the new frame. Independent of the selected difference candidate.
+  const [pick, setPick] = useState<{ x: number; y: number; src: 'seq' | 'A' | 'B' } | null>(null)
   const [diffErr, setDiffErr] = useState('')
   const [diffBusy, setDiffBusy] = useState(false)
 
@@ -119,7 +124,14 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
   }, [contrast]) // eslint-disable-line react-hooks/exhaustive-deps
   // New target/search: start from the fitted view. Mode and frame changes keep the current zoom.
   const slotSig = slots.map(s => s.id).join('|')
-  useEffect(() => { setView(FIT) }, [slotSig])
+  useEffect(() => { setView(FIT); setPick(null) }, [slotSig])
+  useEffect(() => { if (clearPixel) setPick(null) }, [clearPixel])
+  const pickMeta = !pick ? undefined : pick.src === 'A' ? A : pick.src === 'B' ? B : cur
+  const pickKey = pickMeta?.key
+  useEffect(() => {
+    onPixel?.(pick && pickMeta ? { key: pickMeta.key, x: pick.x, y: pick.y, label: `${pick.src === 'seq' ? 'Frame' : pick.src} · ${fmtDate(pickMeta)}` } : null)
+  }, [pick?.x, pick?.y, pick?.src, pickKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  const inspect = (src: 'seq' | 'A' | 'B') => (x: number, y: number) => setPick({ x, y, src })
   useEffect(() => { if (mode !== 'diff') { onDiff(null); onCand(null) } }, [mode, onDiff, onCand])
 
   const kind = demo ? 'demo' as const : 'measured' as const
@@ -127,7 +139,8 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
   const img = (m: FrameMeta, tag?: string, visible = true, fit = FIT_SEQ) => (
     <SkyImage src={pngUrl(m.key, stretch, cmap)} alt={`${tag ? 'Observation ' + tag + ', ' : ''}${fmtDate(m)}`} kind={kind}
       label={tag ? `${tag} · ${bandLabel}` : bandLabel} caption={[fmtDate(m), lam(m)].filter(Boolean).join('  ')}
-      gaia={demo || !visible ? null : gaia} year={m.decimal_year} className={fit} view={view} onView={setView} />
+      gaia={demo || !visible ? null : gaia} year={m.decimal_year} className={fit} view={view} onView={setView}
+      onInspect={inspect(tag === 'A' ? 'A' : tag === 'B' ? 'B' : 'seq')} marker={pick} />
   )
 
   const picker = (tag: 'A' | 'B', m: FrameMeta | undefined, set: (k: string) => void) => {
@@ -249,11 +262,12 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
                 <div className="min-w-0 md:flex-1 xl:w-[min(calc(100cqw-152px),calc(100cqh-26px))] xl:flex-none">
                   <SkyImage src={diff.png} alt="Difference image, A minus k times B" kind={diff.demo ? 'demo' : 'derived'} label={opacity < 1 ? `A − k·B over A (${Math.round(opacity * 100)}%)` : 'A − k·B'} className="lg:max-xl:max-w-[calc(100dvh-380px)]"
                     caption={`display ±${diff.display_scale_sigma ?? 5}σ · σ = ${diff.noise_sigma.toPrecision(3)}`} candidates={diff.candidates} selected={cand} onPick={k => onCand(cand === k ? null : k)}
-                    view={view} onView={setView} underlay={opacity < 1 && A ? pngUrl(A.key, stretch, cmap) : undefined} opacity={opacity} />
+                    view={view} onView={setView} underlay={opacity < 1 && A ? pngUrl(A.key, stretch, cmap) : undefined} opacity={opacity}
+                    onInspect={inspect('A')} marker={pick} />
                 </div>
                 <div className="grid grid-cols-2 gap-2 md:w-36 md:shrink-0 md:grid-cols-1">
-                  {A && <SkyImage src={pngUrl(A.key, stretch, cmap)} alt="Observation A" kind={kind} compact label="A" caption={fmtDate(A).slice(0, 10)} crosshair={false} view={view} onView={setView} />}
-                  {B && <SkyImage src={pngUrl(B.key, stretch, cmap)} alt="Observation B" kind={kind} compact label="B" caption={fmtDate(B).slice(0, 10)} crosshair={false} view={view} onView={setView} />}
+                  {A && <SkyImage src={pngUrl(A.key, stretch, cmap)} alt="Observation A" kind={kind} compact label="A" caption={fmtDate(A).slice(0, 10)} crosshair={false} view={view} onView={setView} onInspect={inspect('A')} marker={pick} />}
+                  {B && <SkyImage src={pngUrl(B.key, stretch, cmap)} alt="Observation B" kind={kind} compact label="B" caption={fmtDate(B).slice(0, 10)} crosshair={false} view={view} onView={setView} onInspect={inspect('B')} marker={pick} />}
                 </div>
               </div>
             )}

@@ -22,7 +22,8 @@ MASK_RGB = (118, 120, 124)     # flagged/invalid observed pixels: light neutral 
 OFFDET_RGB = (46, 47, 50)      # never observed (outside the detector): dark neutral grey ...
 OFFDET_HATCH = (66, 68, 72)    # ... with a fine diagonal hatch so it never reads as dark sky
 # v3: adds the off-detector mask and detector position (display metadata only; science arrays unchanged).
-PROC_VERSION = 3  # bump when processing changes; invalidates cached grids
+# v4: adds pipeline QA metadata (header values + STREAK pixels in the displayed field); science arrays unchanged.
+PROC_VERSION = 4  # bump when processing changes; invalidates cached grids
 DETECTOR_ACTIVE_PX = 2040      # SPHEREx L2 active area (NAXIS1/2 of the full-frame IMAGE HDU)
 GRID_SCALE_DEG = 6.15 / 3600  # nominal SPHEREx pixel scale
 # Pixels with these flag planes are unusable for comparison. SOURCE/GHOST/HALO etc. are reported, not masked.
@@ -78,6 +79,43 @@ def detector_position(hdr, wcs, ra, dec, shape):
         return None
 
 
+def _qa_str(hdr, key):
+    v = hdr.get(key)
+    return v.strip() if isinstance(v, str) and v.strip() else None
+
+
+def _qa_count(hdr, key):
+    v = hdr.get(key)
+    return int(v) if isinstance(v, (int, np.integer)) and not isinstance(v, bool) and v >= 0 else None
+
+
+def pipeline_qa(hdr, flags, flag_hdr, wcs, target, grid_shape):
+    """Pipeline QA as recorded in the FITS headers (no interpretation), plus STREAK-flagged native pixels whose centres
+    fall inside the displayed field. Header counts are detector-wide; the field count is computed from FLAGS.
+    Any absent/invalid value is None ("Unavailable")."""
+    qa = {
+        "l1_dqa": _qa_str(hdr, "L1DQAFLG"),
+        "l2_dqa": _qa_str(hdr, "L2DQAFLG"),
+        "detector_streaks": _qa_count(hdr, "L2 SATSTRKS"),          # HIERARCH L2 SATSTRKS: whole detector
+        "detector_streak_pixels": _qa_count(hdr, "L2 SATSTRKS_PXS"),  # HIERARCH L2 SATSTRKS_PXS: whole detector
+        "field_streak_pixels": None,
+    }
+    if flags is None or flag_hdr is None:
+        return qa
+    planes = {str(flag_hdr[k]).strip(): k[4:] for k in flag_hdr if k.startswith("MSKN")}
+    if "STREAK" not in planes or not planes["STREAK"].isdigit():
+        return qa
+    ys, xs = np.nonzero(flags & (1 << int(planes["STREAK"])))
+    if len(xs) == 0:
+        qa["field_streak_pixels"] = 0
+        return qa
+    with np.errstate(all="ignore"):
+        gx, gy = target.world_to_pixel_values(*wcs.pixel_to_world_values(xs, ys))
+    n_y, n_x = grid_shape
+    qa["field_streak_pixels"] = int(np.count_nonzero(np.isfinite(gx) & np.isfinite(gy) & (gx >= -0.5) & (gx <= n_x - 0.5) & (gy >= -0.5) & (gy <= n_y - 0.5)))
+    return qa
+
+
 def off_detector_mask(wcs, shape, target, grid_shape, arr):
     """Grid pixels whose centre falls outside the retrieved cutout. The cutout box is 1.5x the field, which covers the
     grid at any rotation, so within the grid this only happens where IRSA clipped the cutout at the detector edge.
@@ -100,6 +138,7 @@ def process_cutout(fits_bytes, ra, dec, fov):
         wcs = WCS(hdr).celestial
         data = hdu.data.astype("float64")
         flag_counts, masked = None, 0
+        fh = fl = None
         if "FLAGS" in hdul:
             fh, fl = hdul["FLAGS"].header, hdul["FLAGS"].data.astype("int64")
             # Plane names come from the header (MSKNnnnn), so bit numbering is never assumed.
@@ -124,6 +163,7 @@ def process_cutout(fits_bytes, ra, dec, fov):
         target, shape = grid_wcs(ra, dec, fov)
         arr, foot = reproject_interp((data, wcs), target, shape_out=shape)
         offdet = off_detector_mask(wcs, data.shape, target, shape, arr)
+        qa = pipeline_qa(hdr, fl, fh, wcs, target, shape)
 
         date = hdr.get("DATE-AVG") or hdr.get("DATE-OBS")
         mjd = hdr.get("MJD-AVG") or hdr.get("MJD-OBS")
@@ -150,6 +190,7 @@ def process_cutout(fits_bytes, ra, dec, fov):
             "coverage_fraction": round(float(np.mean(foot > 0.5)), 3),
             "off_detector_fraction": round(float(offdet.mean()), 3),
             "detector_position": detector_position(hdr, wcs, ra, dec, data.shape),
+            "pipeline_qa": qa,
             "pipeline_version": hdul[0].header.get("VERSION"),
         }
     return arr.astype("float32"), (foot > 0.5), meta, offdet

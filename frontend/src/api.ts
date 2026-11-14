@@ -14,6 +14,12 @@ export interface FrameMeta {
   off_detector_fraction?: number
   // From the pipeline's linear WCS 'A' (0-based active pixels); null when it cannot be derived exactly.
   detector_position?: { x: number; y: number; edge_px: number; active_size: number } | null
+  // Verbatim FITS-header QA (null = absent/invalid) + STREAK-flagged native pixels inside the displayed field.
+  pipeline_qa?: {
+    l1_dqa: string | null; l2_dqa: string | null
+    detector_streaks: number | null; detector_streak_pixels: number | null  // whole detector, as reported by the pipeline
+    field_streak_pixels: number | null                                      // computed from FLAGS for this field
+  }
   pipeline_version?: string; exptime_s?: number | null; source_url?: string; demo: boolean; note?: string
   timing?: { source: FrameSource; download_s?: number; attempts?: number; process_s?: number; total_s?: number }
 }

@@ -415,6 +415,7 @@ export default function App() {
           {sel ? <MeasuredPanel m={sel} /> : (
             <div className={section}><h2 className={heading}>Frame</h2><p className="text-[11px] text-ink-3">Metadata for the displayed observation appears here.</p></div>
           )}
+          {sel && !sel.demo && <QAPanel m={sel} />}
           {diff && <DerivedPanel d={diff} cand={cand} onCand={setCand} />}
           <footer className="px-3 py-3 text-[10px] leading-relaxed text-ink-3">
             Data: SPHEREx DR1 via NASA/IPAC Infrared Science Archive (IRSA), SIA2 + IBE cutout service. Name resolution: SIMBAD (CDS) via Sesame.
@@ -479,6 +480,38 @@ function MeasuredPanel({ m }: { m: FrameMeta }) {
           {m.source_url && <a href={m.source_url} target="_blank" rel="noreferrer" className="mt-1 inline-block text-[11px] text-accent-ink hover:underline">Full IRSA file ↗</a>}
         </dl>
       )}
+    </section>
+  )
+}
+
+const UNAVAILABLE = <span className="text-ink-3">Unavailable</span>
+const qaText = (v: string | null | undefined) => v ?? UNAVAILABLE
+const qaCount = (v: number | null | undefined) => (v == null ? UNAVAILABLE : v.toLocaleString('en-US'))
+
+/** Pipeline QA exactly as recorded in the FITS header; detector-wide header counts kept apart from the field count. */
+function QAPanel({ m }: { m: FrameMeta }) {
+  const q = m.pipeline_qa
+  return (
+    <section className={section} aria-label="Pipeline QA">
+      <h2 className={heading}>
+        <span className="text-ink">Pipeline QA</span><span className="font-normal text-ink-3">· SPHEREx FITS header</span>
+        <InfoTip label="Pipeline QA" align="start">Values recorded by the SPHEREx pipeline. "Pass" means the pipeline's automated quality checks passed; it is not proof that the image is free of artefacts.</InfoTip>
+      </h2>
+      <dl className="text-[11px]">
+        <Row k="L1 data-quality (L1DQAFLG)" v={qaText(q?.l1_dqa)} />
+        <Row k="L2 data-quality (L2DQAFLG)" v={qaText(q?.l2_dqa)} />
+        <div className="mt-1.5 text-[10px] font-semibold text-ink-3">Whole detector · reported by pipeline</div>
+        <Row k="Satellite streaks (SATSTRKS)" v={qaCount(q?.detector_streaks)} />
+        <Row k="Streak pixels (SATSTRKS_PXS)" v={qaCount(q?.detector_streak_pixels)} />
+        <div className="mt-1.5 text-[10px] font-semibold text-ink-3">Displayed field · from FITS FLAGS</div>
+        <Row k="STREAK-flagged pixels" v={qaCount(q?.field_streak_pixels)} />
+      </dl>
+      {q?.detector_streaks != null && q.detector_streaks > 0 && (
+        <p role="note" data-testid="streak-advisory" className="mt-2 border-l-2 border-warn bg-warn/5 px-2 py-1 text-[11px] text-ink">
+          The pipeline reports satellite streak activity. Reported streaks may lie outside this displayed field, and additional unflagged linear trails may remain. Inspect linear residuals across multiple observations before interpreting them as astronomical sources.
+        </p>
+      )}
+      <p className="mt-1.5 text-[10px] leading-snug text-ink-3">QA “Pass” reflects automated pipeline checks only; it does not certify the image is free of artefacts.</p>
     </section>
   )
 }

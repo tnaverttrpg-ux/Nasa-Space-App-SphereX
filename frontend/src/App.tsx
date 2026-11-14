@@ -3,6 +3,7 @@ import { Crosshair, FlaskConical, RotateCw, Search, Telescope } from 'lucide-rea
 import { toast, Toaster } from 'sonner'
 import { BANDS, fmtDate, getJSON, type DiffResult, type FrameMeta, type GaiaSource, type ObsResponse, type Preset } from './api'
 import InfoTip from './components/InfoTip'
+import Histogram from './components/Histogram'
 import ThemeSwitch from './components/ThemeSwitch'
 import Viewer, { type Slot } from './components/Viewer'
 import { useTheme } from './theme'
@@ -415,6 +416,7 @@ export default function App() {
           {sel ? <MeasuredPanel m={sel} /> : (
             <div className={section}><h2 className={heading}>Frame</h2><p className="text-[11px] text-ink-3">Metadata for the displayed observation appears here.</p></div>
           )}
+          {sel && <Histogram key={sel.key} frameKey={sel.key} />}
           {sel && !sel.demo && <QAPanel m={sel} />}
           {diff && <DerivedPanel d={diff} cand={cand} onCand={setCand} />}
           <footer className="px-3 py-3 text-[10px] leading-relaxed text-ink-3">

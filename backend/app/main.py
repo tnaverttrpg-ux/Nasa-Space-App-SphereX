@@ -1,6 +1,7 @@
 """SPHERE TRACK API."""
 import asyncio
 import base64
+import functools
 import hashlib
 import io
 import json
@@ -173,6 +174,23 @@ def frame_png(key: str, stretch: str = Query("asinh", pattern="^(asinh|linear)$"
     arr, _, _, offdet = _load(key)
     return Response(fitsproc.render(arr, stretch, cmap, offdet), media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})
+
+
+@functools.lru_cache(maxsize=512)
+def _stats_cached(key):
+    arr, foot, meta, offdet = _load(key)
+    out = fitsproc.grid_stats(arr, foot, offdet)
+    out.update({"key": key, "quantity": "aligned-grid surface brightness", "unit": meta.get("bunit") or "unknown",
+                "calibrated_photometry": False, "demo": bool(meta.get("demo"))})
+    return out
+
+
+@app.get("/api/frame/{key}/stats")
+def frame_stats(key: str):
+    """Histogram + statistics of one processed grid (valid, on-detector pixels only). Cached in memory per grid key
+    (keys are versioned). No browser caching: results also depend on the statistics method, which can change
+    without the grid key changing; the frontend keeps its own per-session cache."""
+    return JSONResponse(_stats_cached(key), headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/diff")

@@ -222,17 +222,66 @@ def _paint_no_data(rgb, good, offdet):
         rgb[offdet & hatch] = OFFDET_HATCH
 
 
+def display_limits(arr):
+    """Display (not measurement) limits used by render(): robust median - 2 sigma up to the 99.7th percentile of all
+    finite grid pixels. None when fewer than 4 finite pixels (render() then draws a flat image)."""
+    a = np.array(arr, dtype="float64")
+    good = np.isfinite(a)
+    if good.sum() < 4:
+        return None
+    med, sig = _robust(a)
+    lo, hi = med - 2 * sig, float(np.percentile(a[good], 99.7))
+    if hi <= lo:
+        hi = lo + 1
+    return float(lo), float(hi)
+
+
+STATS_PERCENTILES = (1, 5, 50, 95, 99, 99.7)
+
+
+def grid_stats(arr, foot, offdet=None, bins=128):
+    """Intensity statistics of the aligned grid for one observation. Only finite pixels inside the reprojection
+    footprint and on the detector are used; nothing is filled or replaced. Values are aligned-grid surface
+    brightnesses (interpolated), not calibrated photometry. The histogram spans the 0.5th-99th percentiles of the
+    valid pixels so the sky distribution stays readable next to bright stars; every pixel outside that range is
+    counted in underflow/overflow (nothing is dropped silently)."""
+    a = np.asarray(arr, dtype="float64")
+    finite = np.isfinite(a)
+    off = np.zeros(a.shape, bool) if offdet is None else np.asarray(offdet, bool)
+    valid = finite & np.asarray(foot, bool) & ~off
+    v = a[valid]
+    out = {
+        "n_grid": int(a.size), "n_valid": int(v.size), "n_off_detector": int(off.sum()),
+        "n_masked_or_invalid": int((~valid & ~off).sum()),     # flagged / non-finite / outside footprint, on detector
+        "display_limits": None, "stats": None, "histogram": None,
+    }
+    lim = display_limits(a)
+    if lim is not None:
+        out["display_limits"] = {"min": lim[0], "max": lim[1]}
+    if v.size == 0:
+        return out
+    med, rsig = _robust(v)
+    pct = np.percentile(v, STATS_PERCENTILES)
+    out["stats"] = {"mean": float(v.mean()), "median": med, "robust_sigma": rsig, "min": float(v.min()), "max": float(v.max()),
+                    "percentiles": {str(p): float(x) for p, x in zip(STATS_PERCENTILES, pct)}}
+    lo, hi = float(np.percentile(v, 0.5)), float(np.percentile(v, 99))
+    if not hi > lo:
+        lo, hi = lo - 0.5, lo + 0.5                              # constant image: one finite-width range
+    counts, edges = np.histogram(v, bins=bins, range=(lo, hi))
+    out["histogram"] = {"edges": [float(e) for e in edges], "counts": [int(c) for c in counts],
+                        "underflow": int((v < lo).sum()), "overflow": int((v > hi).sum())}
+    return out
+
+
 def render(arr, stretch="asinh", cmap="inferno", offdet=None):
     """ZScale + stretch -> PNG bytes. Row 0 is south in FITS, so flip for display (north up)."""
     a = np.array(arr, dtype="float64")
     good = np.isfinite(a)
-    if good.sum() < 4:
+    lim = display_limits(a)
+    if lim is None:
         norm = np.zeros_like(a)
     else:
-        med, sig = _robust(a)
-        lo, hi = med - 2 * sig, float(np.percentile(a[good], 99.7))
-        if hi <= lo:
-            hi = lo + 1
+        lo, hi = lim
         norm = np.clip((np.where(good, a, lo) - lo) / (hi - lo), 0, 1)
         norm = (AsinhStretch(0.1) if stretch == "asinh" else LinearStretch())(norm)
     rgb = (colormaps[cmap](norm)[..., :3] * 255).astype("uint8")

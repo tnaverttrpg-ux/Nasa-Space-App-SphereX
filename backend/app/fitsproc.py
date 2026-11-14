@@ -307,9 +307,10 @@ def _shift(a, b, window=4):
     return out
 
 
-def difference(a, fa, b, fb, wcs, nsig=5.0, max_cand=25, offdet=None):
+def difference(a, fa, b, fb, wcs, nsig=5.0, max_cand=25, offdet=None, scale_sigma=5.0):
     """A - B after per-frame background removal. Returns png, noise, registration offset, candidates.
-    `offdet` (pixels off the detector in A or B) only changes how no-data pixels are drawn."""
+    `offdet` (pixels off the detector in A or B) only changes how no-data pixels are drawn.
+    `scale_sigma` is DISPLAY contrast only (colour range ±scale_sigma·σ); candidates use `nsig`, independently."""
     both = fa & fb
     a = np.where(both, a, np.nan)
     b = np.where(both, b, np.nan)
@@ -320,7 +321,7 @@ def difference(a, fa, b, fb, wcs, nsig=5.0, max_cand=25, offdet=None):
     k = float(np.median(a0[bright] / b0[bright])) if bright.sum() >= 5 else 1.0
     d = a0 - k * b0
     _, sig = _robust(d)
-    norm = np.clip(np.nan_to_num(d / (5 * sig)) * 0.5 + 0.5, 0, 1)
+    norm = np.clip(np.nan_to_num(d / (scale_sigma * sig)) * 0.5 + 0.5, 0, 1)
     rgb = (colormaps["coolwarm"](norm)[..., :3] * 255).astype("uint8")
     _paint_no_data(rgb, both, offdet)
 

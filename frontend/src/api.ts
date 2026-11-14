@@ -27,6 +27,7 @@ export interface Candidate { x: number; y: number; ra: number; dec: number; snr:
 export interface DiffResult {
   png: string; noise_sigma: number; overlap_fraction: number; flux_scale_b_to_a: number
   registration_offset_px: [number, number] | null; candidates: Candidate[]; n_candidates_total: number
+  display_scale_sigma?: number; detection_nsig?: number   // display contrast vs detection threshold (independent)
   wavelength_mismatch_um: number | null; demo: boolean
 }
 export interface GaiaSource { source_id: string; g: number; x: number; y: number; dx_per_yr: number; dy_per_yr: number; pmra: number; pmdec: number }

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
-import { ChevronLeft, ChevronRight, Columns2, Diff, Film, Pause, Play, RotateCw, TriangleAlert, Zap } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronLeft, ChevronRight, Columns2, Diff, Film, Maximize, Pause, Play, RotateCw, TriangleAlert, Zap, ZoomIn, ZoomOut } from 'lucide-react'
 import { toast } from 'sonner'
 import { fmtDate, getJSON, pngUrl, type FrameSource, type DiffResult, type FrameMeta, type GaiaSource } from '../api'
 import InfoTip from './InfoTip'
 import SkyImage from './SkyImage'
+import { FIT, zoomAt, type View } from '../view'
 
 export type Slot = {
   id: string; mjd: number | null; label: string; status: 'pending' | 'loading' | 'ok' | 'error'; meta?: FrameMeta; error?: string; exptime?: number
@@ -49,6 +50,10 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
   const [bKey, setBKey] = useState('')
   const [blinkB, setBlinkB] = useState(false)
   const [diff, setDiff] = useState<DiffResult | null>(null)
+  const [view, setView] = useState<View>(FIT)          // one zoom/pan shared by every image in every mode
+  const [contrast, setContrast] = useState(5)          // difference DISPLAY range ±Nσ (detection threshold is separate)
+  const [opacity, setOpacity] = useState(1)            // difference over observation A: visual aid only
+  const diffCtl = useRef<AbortController | null>(null)
   const [diffErr, setDiffErr] = useState('')
   const [diffBusy, setDiffBusy] = useState(false)
 
@@ -89,18 +94,32 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
     return () => window.removeEventListener('keydown', onKey)
   }, [ok.length])
 
-  const runDiff = async () => {
+  const runDiff = async (contrastOnly = false) => {
     if (!A || !B || A.key === B.key) { setDiffErr('Choose two different observations.'); setDiff(null); onDiff(null); return }
-    setDiffBusy(true); setDiffErr(''); onCand(null)
+    diffCtl.current?.abort()
+    const ctl = new AbortController(); diffCtl.current = ctl
+    // A contrast-only refresh keeps the current picture and candidate selection (candidates do not depend on contrast).
+    if (!contrastOnly) { setDiffBusy(true); onCand(null) }
+    setDiffErr('')
     try {
-      const d = await getJSON<DiffResult>('diff', { a: A.key, b: B.key }, 60_000)
+      const d = await getJSON<DiffResult>('diff', { a: A.key, b: B.key, scale_sigma: contrast }, 60_000, ctl.signal)
+      if (ctl.signal.aborted) return            // stale: a newer A/B or contrast request owns the view
       setDiff(d); onDiff(d)
     } catch (e) {
+      if (ctl.signal.aborted) return
       setDiffErr((e as Error).message); setDiff(null); onDiff(null)
       toast.error('Difference image failed', { description: (e as Error).message })
-    } finally { setDiffBusy(false) }
+    } finally { if (diffCtl.current === ctl) setDiffBusy(false) }
   }
   useEffect(() => { if (mode === 'diff') runDiff() }, [mode, A?.key, B?.key]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {                                // debounce: only display contrast changed
+    if (mode !== 'diff' || !diff || diff.display_scale_sigma === contrast) return
+    const t = setTimeout(() => runDiff(true), 250)
+    return () => clearTimeout(t)
+  }, [contrast]) // eslint-disable-line react-hooks/exhaustive-deps
+  // New target/search: start from the fitted view. Mode and frame changes keep the current zoom.
+  const slotSig = slots.map(s => s.id).join('|')
+  useEffect(() => { setView(FIT) }, [slotSig])
   useEffect(() => { if (mode !== 'diff') { onDiff(null); onCand(null) } }, [mode, onDiff, onCand])
 
   const kind = demo ? 'demo' as const : 'measured' as const
@@ -108,7 +127,7 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
   const img = (m: FrameMeta, tag?: string, visible = true, fit = FIT_SEQ) => (
     <SkyImage src={pngUrl(m.key, stretch, cmap)} alt={`${tag ? 'Observation ' + tag + ', ' : ''}${fmtDate(m)}`} kind={kind}
       label={tag ? `${tag} · ${bandLabel}` : bandLabel} caption={[fmtDate(m), lam(m)].filter(Boolean).join('  ')}
-      gaia={demo || !visible ? null : gaia} year={m.decimal_year} className={fit} />
+      gaia={demo || !visible ? null : gaia} year={m.decimal_year} className={fit} view={view} onView={setView} />
   )
 
   const picker = (tag: 'A' | 'B', m: FrameMeta | undefined, set: (k: string) => void) => {
@@ -175,8 +194,16 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
             </button>
           ))}
         </div>
+        {ok.length > 0 && (
+          <div className="ml-auto flex items-center gap-1" role="group" aria-label="Zoom">
+            <button className={`${ctl} w-8 px-0`} onClick={() => setView(v => zoomAt(v, 0.5, 0.5, 0.8))} disabled={view.s <= 1} aria-label="Zoom out"><ZoomOut size={14} aria-hidden /></button>
+            <span data-testid="zoom-level" className="w-11 text-center font-mono text-[11px] text-ink-2">×{view.s.toFixed(1)}</span>
+            <button className={`${ctl} w-8 px-0`} onClick={() => setView(v => zoomAt(v, 0.5, 0.5, 1.25))} disabled={view.s >= 24} aria-label="Zoom in"><ZoomIn size={14} aria-hidden /></button>
+            <button className={ctl} onClick={() => setView(FIT)} disabled={view.s === 1} aria-label="Fit to view (reset zoom)"><Maximize size={13} aria-hidden />Fit</button>
+          </div>
+        )}
         {mode === 'blink' && ok.length > 0 && (
-          <span className="ml-auto font-mono text-xs text-ink-2">showing <span data-testid="blink-label" className="font-semibold text-ink">{blinkB ? 'B' : 'A'}</span></span>
+          <span className="font-mono text-xs text-ink-2">showing <span data-testid="blink-label" className="font-semibold text-ink">{blinkB ? 'B' : 'A'}</span></span>
         )}
       </div>
 
@@ -215,17 +242,18 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
         ) : (
           <div>
             {diffBusy && <p className="py-16 text-center font-mono text-xs text-ink-2" aria-live="polite">Computing A − k·B …</p>}
-            {diffErr && !diffBusy && <p role="alert" className="py-6 text-center text-xs text-warn">{diffErr} <button className="underline" onClick={runDiff}>Retry</button></p>}
+            {diffErr && !diffBusy && <p role="alert" className="py-6 text-center text-xs text-warn">{diffErr} <button className="underline" onClick={() => runDiff()}>Retry</button></p>}
             {diff && !diffBusy && (
               <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-center">
                 {/* Sized from container units directly (thumb column = 144px + 8px gap); a %-width figure inside a flex-1 item collapsed to 0 at 1280px. */}
                 <div className="min-w-0 md:flex-1 xl:w-[min(calc(100cqw-152px),calc(100cqh-26px))] xl:flex-none">
-                  <SkyImage src={diff.png} alt="Difference image, A minus k times B" kind={diff.demo ? 'demo' : 'derived'} label="A − k·B" className="lg:max-xl:max-w-[calc(100dvh-380px)]"
-                    caption={`±5σ · σ = ${diff.noise_sigma.toPrecision(3)}`} candidates={diff.candidates} selected={cand} onPick={k => onCand(cand === k ? null : k)} />
+                  <SkyImage src={diff.png} alt="Difference image, A minus k times B" kind={diff.demo ? 'demo' : 'derived'} label={opacity < 1 ? `A − k·B over A (${Math.round(opacity * 100)}%)` : 'A − k·B'} className="lg:max-xl:max-w-[calc(100dvh-380px)]"
+                    caption={`display ±${diff.display_scale_sigma ?? 5}σ · σ = ${diff.noise_sigma.toPrecision(3)}`} candidates={diff.candidates} selected={cand} onPick={k => onCand(cand === k ? null : k)}
+                    view={view} onView={setView} underlay={opacity < 1 && A ? pngUrl(A.key, stretch, cmap) : undefined} opacity={opacity} />
                 </div>
                 <div className="grid grid-cols-2 gap-2 md:w-36 md:shrink-0 md:grid-cols-1">
-                  {A && <SkyImage src={pngUrl(A.key, stretch, cmap)} alt="Observation A" kind={kind} compact label="A" caption={fmtDate(A).slice(0, 10)} crosshair={false} />}
-                  {B && <SkyImage src={pngUrl(B.key, stretch, cmap)} alt="Observation B" kind={kind} compact label="B" caption={fmtDate(B).slice(0, 10)} crosshair={false} />}
+                  {A && <SkyImage src={pngUrl(A.key, stretch, cmap)} alt="Observation A" kind={kind} compact label="A" caption={fmtDate(A).slice(0, 10)} crosshair={false} view={view} onView={setView} />}
+                  {B && <SkyImage src={pngUrl(B.key, stretch, cmap)} alt="Observation B" kind={kind} compact label="B" caption={fmtDate(B).slice(0, 10)} crosshair={false} view={view} onView={setView} />}
                 </div>
               </div>
             )}
@@ -237,13 +265,27 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
       {/* legend: always visible; difference semantics shown in Difference mode */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line px-3 py-1.5 text-[11px] text-ink-2">
         {mode === 'diff' && (
+          <div className="flex basis-full flex-wrap items-center gap-x-5 gap-y-1">
+            <label className="inline-flex items-center gap-2"><span className="text-ink-2">Display contrast ±</span>
+              <input type="range" min={1} max={20} step={0.5} value={contrast} onChange={e => setContrast(+e.target.value)} className="w-28" aria-label="Difference display contrast in sigma" />
+              <span data-testid="diff-contrast" className="w-10 font-mono text-ink">{contrast}σ</span>
+              {contrast !== 5 && <button className="text-[10px] underline" onClick={() => setContrast(5)}>default 5σ</button>}
+            </label>
+            <label className="inline-flex items-center gap-2"><span className="text-ink-2">Opacity over A</span>
+              <input type="range" min={0} max={1} step={0.05} value={opacity} onChange={e => setOpacity(+e.target.value)} className="w-24" aria-label="Difference image opacity over observation A" />
+              <span data-testid="diff-opacity" className="w-9 font-mono text-ink">{Math.round(opacity * 100)}%</span>
+            </label>
+            <span className="text-[10px] text-ink-3">Display only: candidates and statistics do not change.{opacity < 1 && ' Below 100% colours blend with observation A — visual aid, not pure red/blue.'}</span>
+          </div>
+        )}
+        {mode === 'diff' && (
           <>
             {/* Swatches are the coolwarm colour-map ends used in the difference PNG: data colours, same in both themes. */}
             <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 ring-1 ring-line-strong bg-[#b40426]" aria-hidden /><span className="text-ink">Red = brighter in observation A</span></span>
             <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 ring-1 ring-line-strong bg-[#3b4cc0]" aria-hidden /><span className="text-ink">Blue = brighter in observation B</span></span>
-            <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 ring-1 ring-line-strong bg-[#dddddd]" aria-hidden />no change (scale ±5σ)</span>
+            <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 ring-1 ring-line-strong bg-[#dddddd]" aria-hidden /><span data-testid="diff-scale-legend">no change (display scale ±{diff?.display_scale_sigma ?? contrast}σ)</span></span>
             <span className="inline-flex items-center">Difference imaging
-              <InfoTip label="Difference imaging" align="end">Observation B is scaled by a fitted flux factor k and subtracted from A after WCS alignment and background removal. Static stars cancel. A source that moved leaves a red/blue pair; a source that changed brightness leaves one colour. Colour scale is ±5σ.</InfoTip>
+              <InfoTip label="Difference imaging" align="end">Observation B is scaled by a fitted flux factor k and subtracted from A after WCS alignment and background removal. Static stars cancel. A source that moved leaves a red/blue pair; a source that changed brightness leaves one colour. The colour scale (default ±5σ) is display contrast only: candidate detection always uses its own 5σ threshold.</InfoTip>
             </span>
           </>
         )}

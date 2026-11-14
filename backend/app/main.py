@@ -194,7 +194,8 @@ def frame_stats(key: str):
 
 
 @app.get("/api/diff")
-def diff(a: str, b: str, nsig: float = Query(5.0, ge=3, le=20)):
+def diff(a: str, b: str, nsig: float = Query(5.0, ge=3, le=20),
+         scale_sigma: float = Query(5.0, ge=1, le=50, description="Display contrast only: colour range ±scale_sigma·σ")):
     arr_a, fa, ma, oa = _load(a)
     arr_b, fb, mb, ob = _load(b)
     if arr_a.shape != arr_b.shape:
@@ -202,7 +203,9 @@ def diff(a: str, b: str, nsig: float = Query(5.0, ge=3, le=20)):
     g = ma["grid"]
     w, _ = fitsproc.grid_wcs(g["ra"], g["dec"], g["fov"])
     offdet = None if oa is None or ob is None else (oa | ob)  # not observed in A or in B
-    out = fitsproc.difference(arr_a, fa, arr_b, fb, w, nsig, offdet=offdet)
+    out = fitsproc.difference(arr_a, fa, arr_b, fb, w, nsig, offdet=offdet, scale_sigma=scale_sigma)
+    out["display_scale_sigma"] = scale_sigma
+    out["detection_nsig"] = nsig
     out["png"] = "data:image/png;base64," + base64.b64encode(out["png"]).decode()
     out["kind"] = "derived"
     out["demo"] = bool(ma.get("demo"))

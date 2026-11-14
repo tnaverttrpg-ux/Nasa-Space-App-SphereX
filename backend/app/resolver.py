@@ -15,7 +15,9 @@ from .archive import CACHE, ArchiveError
 from .fitsproc import grid_wcs
 
 SESAME = "https://cds.unistra.fr/cgi-bin/nph-sesame/-oxp/S?"
-GAIA_TAP = "https://gea.esac.esa.int/tap-server/tap"
+# ESA archive first; GAVO's gaia.dr3lite mirror (same DR3 values, epoch 2016.0) if ESA rate-limits (HTTP 429).
+GAIA_SERVICES = [("https://gea.esac.esa.int/tap-server/tap", "gaiadr3.gaia_source"),
+                 ("https://dc.g-vo.org/tap", "gaia.dr3lite")]
 SEARCH_EPOCH = 2025.9  # mid-point of SPHEREx DR1 coverage (May 2025 - May 2026)
 
 PRESETS = [
@@ -93,20 +95,33 @@ def gaia_sources(ra, dec, fov, gmax=19.0, timeout=60):
     """Gaia DR3 sources with grid pixel position at epoch 2016.0 plus pixel motion per year (linear, small field)."""
     w, (n, _) = grid_wcs(ra, dec, fov)
     rad = fov * 0.75
-    q = f"""SELECT TOP 400 source_id, ra, dec, pmra, pmdec, phot_g_mean_mag FROM gaiadr3.gaia_source
+    # Gaia DR3 is static: cache rows on disk so repeat views never re-query ESA (which rate-limits, HTTP 429).
+    f = CACHE / "gaia" / f"{ra:.6f}_{dec:.6f}_{rad:.5f}_{gmax}.json"
+    f.parent.mkdir(exist_ok=True)
+    if f.exists():
+        rows = json.loads(f.read_text())
+    else:
+        errs = []
+        for url, table in GAIA_SERVICES:
+            q = f"""SELECT TOP 400 source_id, ra, dec, pmra, pmdec, phot_g_mean_mag FROM {table}
 WHERE 1=CONTAINS(POINT('ICRS',ra,dec), CIRCLE('ICRS',{ra:.6f},{dec:.6f},{rad:.5f})) AND phot_g_mean_mag < {gmax}
 ORDER BY phot_g_mean_mag"""
-    try:
-        t = pyvo.dal.TAPService(GAIA_TAP).run_sync(q, timeout=timeout).to_table()
-    except Exception as e:
-        raise ArchiveError(f"Gaia archive query failed: {e}")
+            try:
+                t = pyvo.dal.TAPService(url).run_sync(q, timeout=timeout).to_table()
+                break
+            except Exception as e:
+                errs.append(f"{url}: {e}")
+        else:
+            raise ArchiveError("Gaia DR3 query failed: " + " | ".join(errs))
+        fin = lambda v: float(v) if np.isfinite(v) else 0.0
+        rows = [[str(r["source_id"]), float(r["ra"]), float(r["dec"]), fin(r["pmra"]), fin(r["pmdec"]),
+                 float(r["phot_g_mean_mag"])] for r in t]
+        f.write_text(json.dumps(rows))
     out = []
-    for r in t:
-        x, y = w.world_to_pixel_values(float(r["ra"]), float(r["dec"]))
-        pmra = float(r["pmra"]) if np.isfinite(r["pmra"]) else 0.0
-        pmdec = float(r["pmdec"]) if np.isfinite(r["pmdec"]) else 0.0
+    for sid, sra, sdec, pmra, pmdec, g in rows:
+        x, y = w.world_to_pixel_values(sra, sdec)
         s = w.wcs.cdelt[1] * 3600 * 1000  # mas per pixel
-        out.append({"source_id": str(r["source_id"]), "g": round(float(r["phot_g_mean_mag"]), 2),
+        out.append({"source_id": sid, "g": round(g, 2),
                     "x": float(x), "y": float(n - 1 - y),  # display coords (north up)
                     "dx_per_yr": -pmra / s, "dy_per_yr": -pmdec / s, "pmra": pmra, "pmdec": pmdec})
     return {"ref_epoch": 2016.0, "grid_size": n, "sources": out}

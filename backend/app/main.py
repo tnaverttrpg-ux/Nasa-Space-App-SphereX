@@ -1,10 +1,14 @@
 """SPHERE TRACK API."""
+import asyncio
 import base64
 import hashlib
 import json
+import threading
+import time
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -27,8 +31,32 @@ def _archive_err(_, e: ArchiveError):
 
 
 def _save(key, arr, foot, meta):
-    np.savez_compressed(GRIDS / f"{key}.npz", arr=arr, foot=foot)
-    (GRIDS / f"{key}.json").write_text(json.dumps(meta))
+    # npz first, json last, each via temp file + atomic rename: the json is the "grid is complete" marker.
+    tmp = GRIDS / f"{key}.{threading.get_ident()}.tmp.npz"
+    np.savez_compressed(tmp, arr=arr, foot=foot)
+    _publish(tmp, GRIDS / f"{key}.npz")
+    tmpj = GRIDS / f"{key}.{threading.get_ident()}.tmp.json"
+    tmpj.write_text(json.dumps(meta))
+    _publish(tmpj, GRIDS / f"{key}.json")
+
+
+def _publish(tmp, dest):
+    """Atomic rename. Two requests for the same frame produce identical, deterministic output; on Windows the second
+    rename fails while the first file is open, so keep the existing file and drop the duplicate."""
+    try:
+        tmp.replace(dest)
+    except PermissionError:
+        if not dest.exists():
+            raise
+        tmp.unlink(missing_ok=True)
+
+
+def _grid_key(url, ra, dec, fov):
+    return hashlib.sha1(f"{fitsproc.PROC_VERSION}|{url}|{ra:.6f}|{dec:.6f}|{fov:.4f}".encode()).hexdigest()[:20]
+
+
+def _cutout_size(fov):
+    return min(fov * 1.5, 0.75)  # 1.5x so the rotated native frame still covers the corners of the north-up grid
 
 
 def _load(key):
@@ -39,8 +67,9 @@ def _load(key):
     f = GRIDS / f"{key}.npz"
     if not f.exists():
         raise HTTPException(404, "frame not processed yet")
-    z = np.load(f)
-    return z["arr"], z["foot"], json.loads((GRIDS / f"{key}.json").read_text())
+    with np.load(f) as z:  # close the handle: an open .npz blocks atomic renames on Windows
+        arr, foot = z["arr"], z["foot"]
+    return arr, foot, json.loads((GRIDS / f"{key}.json").read_text())
 
 
 @app.get("/api/health")
@@ -60,27 +89,58 @@ def resolve(name: str = Query(..., min_length=1, max_length=100)):
 
 @app.get("/api/observations")
 def observations(ra: float = RA, dec: float = DEC, band: str = Query("D3", pattern="^D[1-6]$"),
-                 collection: str = Query("spherex_dr1"), limit: int = Query(12, ge=2, le=48)):
+                 collection: str = Query("spherex_dr1"), limit: int = Query(12, ge=2, le=48),
+                 fov: float | None = Query(None, ge=0.02, le=0.5, description="If given, mark observations already cached")):
     if collection not in archive.COLLECTIONS:
         raise HTTPException(400, f"collection must be one of {archive.COLLECTIONS}")
-    return archive.query_observations(ra, dec, band, collection, limit)
+    out = archive.query_observations(ra, dec, band, collection, limit)
+    if fov is not None:
+        for o in out["observations"]:
+            o["cached"] = ("grid" if (GRIDS / f"{_grid_key(o['access_url'], ra, dec, fov)}.json").exists()
+                           else "cutout" if archive.cached_cutout(o["access_url"], ra, dec, _cutout_size(fov)) else None)
+    return out
 
 
 @app.get("/api/frame")
-def frame(url: str, ra: float = RA, dec: float = DEC, fov: float = FOV, exptime_s: float | None = None):
-    """Download (cached) cutout, parse FITS, reproject onto the series grid. Returns measured metadata."""
-    key = hashlib.sha1(f"{fitsproc.PROC_VERSION}|{url}|{ra:.6f}|{dec:.6f}|{fov:.4f}".encode()).hexdigest()[:20]
+async def frame(request: Request, url: str, ra: float = RA, dec: float = DEC, fov: float = FOV, exptime_s: float | None = None):
+    """Cached grid, else cached cutout, else (deduplicated, rate-limited) IRSA download; then parse + reproject."""
+    t0 = time.perf_counter()
+    key = _grid_key(url, ra, dec, fov)
     if (GRIDS / f"{key}.json").exists():
-        return {"key": key, **json.loads((GRIDS / f"{key}.json").read_text())}
-    # 1.5x so the rotated native frame still covers the corners of the north-up grid
-    raw = archive.fetch_cutout(url, ra, dec, min(fov * 1.5, 0.75))
+        archive.log.info("cache HIT grid %s", key)
+        return {"key": key, **json.loads((GRIDS / f"{key}.json").read_text()), "timing": {"source": "grid", "total_s": round(time.perf_counter() - t0, 3)}}
+    archive.check_url(url)
+    size = _cutout_size(fov)
+    path = archive.cached_cutout(url, ra, dec, size)
+    raw = await run_in_threadpool(archive.read_cached, path) if path else None
+    timing = {"source": "cutout-cache"}
+    if raw is not None:
+        archive.log.info("cache HIT cutout %s", path.name)
+    else:
+        job, shared = archive.acquire_cutout(url, ra, dec, size)
+        fut = asyncio.wrap_future(job.future)
+        try:
+            while not fut.done():
+                await asyncio.wait({fut}, timeout=0.5)
+                if not fut.done() and await request.is_disconnected():
+                    archive.log.info("client went away while waiting for %s (shared=%s)", url.rsplit("/", 1)[-1], shared)
+                    return Response(status_code=499)
+        finally:
+            archive.release_cutout(job)
+        try:
+            raw, info = fut.result()
+        except archive.Cancelled:
+            return Response(status_code=499)
+        timing = {"source": "shared-download" if shared else "download", **info}
+    t1 = time.perf_counter()
     try:
-        arr, foot, meta = fitsproc.process_cutout(raw, ra, dec, fov)
+        arr, foot, meta = await run_in_threadpool(fitsproc.process_cutout, raw, ra, dec, fov)
     except Exception as e:
         raise HTTPException(422, f"FITS processing failed: {e}")
     meta.update({"source_url": url, "exptime_s": exptime_s, "grid": {"ra": ra, "dec": dec, "fov": fov}, "demo": False})
-    _save(key, arr, foot, meta)
-    return {"key": key, **meta}
+    await run_in_threadpool(_save, key, arr, foot, meta)
+    timing.update({"process_s": round(time.perf_counter() - t1, 3), "total_s": round(time.perf_counter() - t0, 2)})
+    return {"key": key, **meta, "timing": timing}
 
 
 @app.get("/api/frame/{key}.png")

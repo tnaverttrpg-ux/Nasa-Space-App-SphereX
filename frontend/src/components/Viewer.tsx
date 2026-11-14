@@ -1,30 +1,49 @@
 import { useEffect, useMemo, useState } from 'react'
-import { getJSON, pngUrl, type DiffResult, type FrameMeta, type GaiaSource } from '../api'
+import { ChevronLeft, ChevronRight, Columns2, Diff, Film, Pause, Play, RotateCw, TriangleAlert, Zap } from 'lucide-react'
+import { toast } from 'sonner'
+import { fmtDate, getJSON, pngUrl, type FrameSource, type DiffResult, type FrameMeta, type GaiaSource } from '../api'
+import InfoTip from './InfoTip'
 import SkyImage from './SkyImage'
 
-export type Slot = { id: string; mjd: number | null; label: string; status: 'pending' | 'loading' | 'ok' | 'error'; meta?: FrameMeta; error?: string; exptime?: number }
+export type Slot = {
+  id: string; mjd: number | null; label: string; status: 'pending' | 'loading' | 'ok' | 'error'; meta?: FrameMeta; error?: string; exptime?: number
+  cached?: 'grid' | 'cutout' | null   // known before loading (from /observations)
+  source?: FrameSource                // how it was actually served
+}
 type Mode = 'sequence' | 'side' | 'blink' | 'diff'
 
 interface Props {
   slots: Slot[]
   demo: boolean
+  band?: string
+  totalVisits?: number
   gaia: GaiaSource[] | null
+  stretch: string
+  cmap: string
+  cand: number | null
+  onCand: (i: number | null) => void
   onRetry: (id: string) => void
+  onRetryAll: () => void
   onSelect: (m: FrameMeta) => void
   onDiff: (d: DiffResult | null) => void
 }
 
-const fmtDate = (m?: FrameMeta) => !m?.date_obs ? '—' : m.demo ? m.date_obs : m.date_obs.replace('T', ' ').slice(0, 19) + ' UTC'
-const btn = 'rounded-lg px-3 py-1.5 text-sm font-medium ring-1 ring-space-600 hover:bg-space-700 disabled:opacity-40'
+const SOURCE_LABEL: Record<FrameSource, string> = { grid: 'from cache', 'cutout-cache': 'from cached cutout', download: 'downloaded from IRSA', 'shared-download': 'downloaded from IRSA (shared request)' }
+const mjdToDate = (mjd: number) => new Date((mjd - 40587) * 86400000)
+const lam = (m?: FrameMeta) => (m?.wavelength_at_target ? `λ ${m.wavelength_at_target.center_um.toFixed(3)} µm` : '')
+const ctl = 'inline-flex h-8 items-center justify-center gap-1.5 rounded-sm border border-line-strong px-2.5 text-xs font-medium text-ink hover:border-ink-2 hover:bg-hover disabled:opacity-35 disabled:hover:border-line-strong disabled:hover:bg-transparent'
+const MODES: [Mode, string, typeof Film][] = [['sequence', 'Sequence', Film], ['side', 'Side-by-side', Columns2], ['blink', 'Blink', Zap], ['diff', 'Difference', Diff]]
+// Image sizing. ≥1280px: the image area is a size container filling the leftover height, so the image takes
+// exactly the space left after controls (26px = caption strip). 1024–1279px: page scrolls; cap by viewport height.
+const FIT_SEQ = 'lg:max-xl:max-w-[calc(100dvh-300px)] xl:w-[min(100%,calc(100cqh-26px))]'
+const FIT_CMP = 'lg:max-xl:max-w-[calc(100dvh-380px)] xl:w-[min(100%,calc(100cqh-26px))]'
 
-export default function Viewer({ slots, demo, gaia, onRetry, onSelect, onDiff }: Props) {
+export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, cmap, cand, onCand, onRetry, onRetryAll, onSelect, onDiff }: Props) {
   const ok = useMemo(() => slots.filter(s => s.status === 'ok' && s.meta).map(s => s.meta!), [slots])
   const [mode, setMode] = useState<Mode>('sequence')
   const [i, setI] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [fps, setFps] = useState(2)
-  const [stretch, setStretch] = useState('asinh')
-  const [cmap, setCmap] = useState('inferno')
   const [aKey, setAKey] = useState('')
   const [bKey, setBKey] = useState('')
   const [blinkB, setBlinkB] = useState(false)
@@ -36,6 +55,7 @@ export default function Viewer({ slots, demo, gaia, onRetry, onSelect, onDiff }:
   const cur = ok[idx]
   const A = ok.find(m => m.key === aKey) ?? ok[0]
   const B = ok.find(m => m.key === bKey) ?? ok[ok.length - 1]
+  const nErr = slots.filter(s => s.status === 'error').length
 
   useEffect(() => { if (cur) onSelect(cur) }, [cur, onSelect])
 
@@ -53,7 +73,8 @@ export default function Viewer({ slots, demo, gaia, onRetry, onSelect, onDiff }:
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'SELECT') return
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON' && e.key === ' ') return
       if (e.key === 'ArrowRight') setI(v => Math.min(v + 1, ok.length - 1))
       if (e.key === 'ArrowLeft') setI(v => Math.max(v - 1, 0))
       if (e.key === ' ') { e.preventDefault(); setPlaying(p => !p) }
@@ -63,138 +84,227 @@ export default function Viewer({ slots, demo, gaia, onRetry, onSelect, onDiff }:
   }, [ok.length])
 
   const runDiff = async () => {
-    if (!A || !B || A.key === B.key) { setDiffErr('Choose two different frames.'); return }
-    setDiffBusy(true); setDiffErr('')
+    if (!A || !B || A.key === B.key) { setDiffErr('Choose two different observations.'); setDiff(null); onDiff(null); return }
+    setDiffBusy(true); setDiffErr(''); onCand(null)
     try {
       const d = await getJSON<DiffResult>('diff', { a: A.key, b: B.key }, 60_000)
       setDiff(d); onDiff(d)
-    } catch (e) { setDiffErr((e as Error).message); setDiff(null); onDiff(null) }
-    finally { setDiffBusy(false) }
+    } catch (e) {
+      setDiffErr((e as Error).message); setDiff(null); onDiff(null)
+      toast.error('Difference image failed', { description: (e as Error).message })
+    } finally { setDiffBusy(false) }
   }
   useEffect(() => { if (mode === 'diff') runDiff() }, [mode, A?.key, B?.key]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (mode !== 'diff') onDiff(null) }, [mode, onDiff])
+  useEffect(() => { if (mode !== 'diff') { onDiff(null); onCand(null) } }, [mode, onDiff, onCand])
 
-  const badge = demo ? { text: 'SYNTHETIC DEMO · NOT SPHEREx', tone: 'amber' as const } : { text: 'MEASURED · SPHEREx', tone: 'cyan' as const }
-  const img = (m: FrameMeta) => (
-    <SkyImage src={pngUrl(m.key, stretch, cmap)} alt={`Frame ${fmtDate(m)}`} badge={badge}
-      caption={`${fmtDate(m)}${m.wavelength_at_target ? ` · λ ${m.wavelength_at_target.center_um} µm` : ''}`}
-      gaia={demo ? null : gaia} year={m.decimal_year} />
-  )
-  const pick = (label: string, val: string | undefined, set: (k: string) => void) => (
-    <label className="flex min-w-0 flex-1 items-center gap-2 text-xs text-slate-400">
-      <span className="font-semibold text-slate-300">{label}</span>
-      <select value={val} onChange={e => set(e.target.value)} className="min-w-0 flex-1 rounded-md bg-space-800 px-2 py-1 text-slate-200 ring-1 ring-space-600">
-        {ok.map(m => <option key={m.key} value={m.key}>{fmtDate(m)}</option>)}
-      </select>
-    </label>
+  const kind = demo ? 'demo' as const : 'measured' as const
+  const bandLabel = demo ? 'NumPy' : `SPHEREx${band ? ' ' + band : ''}`
+  const img = (m: FrameMeta, tag?: string, visible = true, fit = FIT_SEQ) => (
+    <SkyImage src={pngUrl(m.key, stretch, cmap)} alt={`${tag ? 'Observation ' + tag + ', ' : ''}${fmtDate(m)}`} kind={kind}
+      label={tag ? `${tag} · ${bandLabel}` : bandLabel} caption={[fmtDate(m), lam(m)].filter(Boolean).join('  ')}
+      gaia={demo || !visible ? null : gaia} year={m.decimal_year} className={fit} />
   )
 
-  // Timeline spans real time (MJD) so gaps between visits are visible.
+  const picker = (tag: 'A' | 'B', m: FrameMeta | undefined, set: (k: string) => void) => {
+    const k = m ? ok.findIndex(x => x.key === m.key) : -1
+    return (
+      <div className="flex min-w-0 flex-1 items-center gap-1">
+        <span className={`w-5 text-center font-mono text-xs font-semibold ${mode === 'diff' ? (tag === 'A' ? 'text-diff-a' : 'text-diff-b') : 'text-ink'}`}>{tag}</span>
+        <button className={`${ctl} w-8 px-0`} disabled={k <= 0} onClick={() => set(ok[k - 1].key)} aria-label={`Observation ${tag}: earlier`}><ChevronLeft size={14} aria-hidden /></button>
+        <select value={m?.key} onChange={e => set(e.target.value)} aria-label={`Observation ${tag}`}
+          className="h-8 min-w-0 flex-1 rounded-sm border border-line-strong bg-panel px-1.5 font-mono text-[11px] text-ink">
+          {ok.map(x => <option key={x.key} value={x.key}>{fmtDate(x)}{x.wavelength_at_target ? `  ${lam(x)}` : ''}</option>)}
+        </select>
+        <button className={`${ctl} w-8 px-0`} disabled={k < 0 || k >= ok.length - 1} onClick={() => set(ok[k + 1].key)} aria-label={`Observation ${tag}: later`}><ChevronRight size={14} aria-hidden /></button>
+      </div>
+    )
+  }
+
+  const lamA = A?.wavelength_at_target?.center_um, lamB = B?.wavelength_at_target?.center_um
+  const lamWarn = mode !== 'sequence' && lamA != null && lamB != null && Math.abs(lamA - lamB) > 0.02 && (
+    <span role="note" className="inline-flex items-center gap-1.5 text-warn">
+      <TriangleAlert size={12} className="text-warn" aria-hidden />
+      A and B sample different wavelengths at the target ({lamA.toFixed(3)} vs {lamB.toFixed(3)} µm). Brightness differences may be spectral, not temporal.
+    </span>
+  )
+
+  // --- timeline geometry: real time on x; visits closer than MIN_GAP% stack into extra rows so each stays clickable.
   const mjds = slots.map(s => s.mjd).filter((x): x is number => x != null)
   const t0 = Math.min(...mjds), t1 = Math.max(...mjds)
-  const pos = (s: Slot, k: number) => (s.mjd != null && t1 > t0 ? (s.mjd - t0) / (t1 - t0) : k / Math.max(1, slots.length - 1)) * 100
+  const timed = mjds.length > 1 && t1 > t0
+  const dots = useMemo(() => {
+    const MIN_GAP = 2.2, ROWS = 3
+    const last = Array<number>(ROWS).fill(-99)
+    return slots.map((s, k) => {
+      const pos = (timed && s.mjd != null ? (s.mjd - t0) / (t1 - t0) : k / Math.max(1, slots.length - 1)) * 100
+      let row = last.findIndex(p => pos - p >= MIN_GAP)
+      if (row < 0) row = last.indexOf(Math.min(...last))
+      last[row] = pos
+      return { s, pos, row }
+    })
+  }, [slots, timed, t0, t1])
+  const months = useMemo(() => {
+    if (!timed) return []
+    const out: { pos: number; label: string }[] = []
+    const d = mjdToDate(t0), end = mjdToDate(t1)
+    const m = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))
+    while (m <= end) {
+      out.push({ pos: ((m.getTime() / 86400000 + 40587 - t0) / (t1 - t0)) * 100, label: m.toISOString().slice(0, 7) })
+      m.setUTCMonth(m.getUTCMonth() + 1)
+    }
+    return out
+  }, [timed, t0, t1])
+  const labelEvery = Math.max(1, Math.ceil(months.length / 7))
+  const curDot = dots.find(d => d.s.meta?.key === cur?.key)
 
   return (
-    <section className="rounded-2xl bg-space-900/80 p-3 ring-1 ring-space-700 backdrop-blur sm:p-4">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <div role="tablist" className="flex rounded-lg bg-space-950 p-1 ring-1 ring-space-700">
-          {([['sequence', 'Sequence'], ['side', 'Side-by-side'], ['blink', 'Blink'], ['diff', 'Difference']] as [Mode, string][]).map(([m, l]) => (
+    <section aria-label="Observation viewer" className="flex flex-col border border-line bg-panel xl:min-h-full">
+      {/* mode bar */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-2 py-1.5">
+        <div role="tablist" aria-label="Comparison mode" className="flex flex-wrap">
+          {MODES.map(([m, l, Icon]) => (
             <button key={m} role="tab" aria-selected={mode === m} onClick={() => setMode(m)}
-              className={`rounded-md px-3 py-1 text-sm ${mode === m ? 'bg-gradient-to-r from-cyan-glow/25 to-violet-glow/25 text-white ring-1 ring-cyan-glow/40' : 'text-slate-400 hover:text-slate-200'}`}>{l}</button>
+              className={`inline-flex h-8 items-center gap-1.5 border-b-2 px-3 text-xs font-medium ${mode === m ? 'border-accent text-ink' : 'border-transparent text-ink-2 hover:text-ink'}`}>
+              <Icon size={14} aria-hidden />{l}
+            </button>
           ))}
         </div>
-        <div className="ml-auto flex gap-2 text-xs">
-          <select aria-label="Stretch" value={stretch} onChange={e => setStretch(e.target.value)} className="rounded-md bg-space-800 px-2 py-1 ring-1 ring-space-600">
-            <option value="asinh">asinh</option><option value="linear">linear</option>
-          </select>
-          <select aria-label="Colormap" value={cmap} onChange={e => setCmap(e.target.value)} className="rounded-md bg-space-800 px-2 py-1 ring-1 ring-space-600">
-            {['inferno', 'magma', 'viridis', 'gray'].map(c => <option key={c}>{c}</option>)}
-          </select>
-        </div>
-      </div>
-
-      {ok.length === 0 ? (
-        <div className="flex aspect-[4/3] items-center justify-center rounded-xl bg-space-950 text-sm text-slate-400 ring-1 ring-space-700">
-          Waiting for the first frame…
-        </div>
-      ) : mode === 'sequence' ? (
-        <div className="mx-auto max-w-[640px]">
-          <div className="relative">
-            {ok.map((m, k) => (
-              <div key={m.key} className={k === idx ? '' : 'pointer-events-none absolute inset-0 opacity-0'} aria-hidden={k !== idx}>{img(m)}</div>
-            ))}
-          </div>
-        </div>
-      ) : mode === 'side' ? (
-        <div>
-          <div className="mb-2 flex flex-col gap-2 sm:flex-row">{pick('A', A?.key, setAKey)}{pick('B', B?.key, setBKey)}</div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{A && img(A)}{B && img(B)}</div>
-        </div>
-      ) : mode === 'blink' ? (
-        <div>
-          <div className="mb-2 flex flex-col gap-2 sm:flex-row">{pick('A', A?.key, setAKey)}{pick('B', B?.key, setBKey)}</div>
-          <div className="relative mx-auto max-w-[640px]">
-            {[A, B].map((m, k) => m && (
-              <div key={k} className={(k === 1) === blinkB ? '' : 'pointer-events-none absolute inset-0 opacity-0'}>{img(m)}</div>
-            ))}
-            <span className="absolute right-3 top-2 rounded bg-space-950/80 px-2 py-0.5 font-mono text-sm text-white">{blinkB ? 'B' : 'A'}</span>
-          </div>
-        </div>
-      ) : (
-        <div>
-          <div className="mb-2 flex flex-col gap-2 sm:flex-row">{pick('A', A?.key, setAKey)}{pick('B', B?.key, setBKey)}</div>
-          {diffBusy && <p className="py-10 text-center text-sm text-slate-400">Computing difference…</p>}
-          {diffErr && <p className="py-4 text-center text-sm text-red-300">{diffErr} <button className="underline" onClick={runDiff}>Retry</button></p>}
-          {diff && !diffBusy && (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[2fr_1fr]">
-              <SkyImage src={diff.png} alt="Difference image A minus B" badge={{ text: 'DERIVED · A − k·B', tone: 'violet' }}
-                caption="red = brighter in A · blue = brighter in B" candidates={diff.candidates} />
-              <div className="grid grid-cols-2 gap-2 self-start sm:grid-cols-1">{A && img(A)}{B && img(B)}</div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* playback */}
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <button className={btn} onClick={() => setI(Math.max(idx - 1, 0))} disabled={idx === 0} aria-label="Previous frame">◀ Prev</button>
-        <button className={`${btn} min-w-20 bg-cyan-glow/15 text-cyan-glow`} onClick={() => setPlaying(p => !p)} disabled={ok.length < 2 || mode !== 'sequence'}>
-          {playing ? '❚❚ Pause' : '▶ Play'}
-        </button>
-        <button className={btn} onClick={() => setI(Math.min(idx + 1, ok.length - 1))} disabled={idx >= ok.length - 1} aria-label="Next frame">Next ▶</button>
-        <label className="flex items-center gap-2 text-xs text-slate-400">
-          Speed <input type="range" min={0.5} max={10} step={0.5} value={fps} onChange={e => setFps(+e.target.value)} className="w-24" />
-          <span className="w-12 font-mono text-slate-300">{fps} fps</span>
-        </label>
-        <div className="ml-auto text-right">
-          <div className="font-mono text-sm text-cyan-glow">{fmtDate(cur)}</div>
-          <div className="text-xs text-slate-500">frame {ok.length ? idx + 1 : 0} / {ok.length}</div>
-        </div>
-      </div>
-
-      {/* timeline */}
-      <div className="relative mt-4 h-10 px-2">
-        <div className="absolute inset-x-2 top-4 h-0.5 rounded bg-gradient-to-r from-cyan-glow/40 to-violet-glow/40" />
-        <div className="absolute inset-x-2 inset-y-0">{slots.map((s, k) => {
-          const okIdx = ok.findIndex(m => m.key === s.meta?.key)
-          const color = s.status === 'ok' ? (okIdx === idx ? 'bg-cyan-glow ring-4 ring-cyan-glow/30' : 'bg-violet-glow') : s.status === 'error' ? 'bg-red-500' : 'animate-pulse bg-slate-500'
-          return (
-            <button key={s.id} title={s.status === 'error' ? `${s.label}: ${s.error} (click to retry)` : s.label}
-              style={{ left: `${pos(s, k)}%` }}
-              onClick={() => (s.status === 'error' ? onRetry(s.id) : okIdx >= 0 && setI(okIdx))}
-              className={`absolute top-2.5 h-3.5 w-3.5 -translate-x-1/2 rounded-full ${color}`} aria-label={`${s.label} (${s.status})`} />
-          )
-        })}</div>
-        {mjds.length > 0 && !demo && (
-          <div className="absolute inset-x-2 top-7 flex justify-between font-mono text-[10px] text-slate-500">
-            <span>MJD {t0.toFixed(1)}</span><span>MJD {t1.toFixed(1)}</span>
-          </div>
+        {mode === 'blink' && ok.length > 0 && (
+          <span className="ml-auto font-mono text-xs text-ink-2">showing <span data-testid="blink-label" className="font-semibold text-ink">{blinkB ? 'B' : 'A'}</span></span>
         )}
       </div>
-      <p className="mt-1 text-[11px] text-slate-500">
-        <span className="mr-1 inline-block h-2.5 w-2.5 align-middle" style={{ background: 'rgb(78,86,112)' }} />grey = masked pixels (saturated, hot, transient, … per FITS FLAGS) or no coverage.
-        Each frame is scaled independently. Keys: ← → step · space play/pause. Red timeline dots failed — click to retry.
-      </p>
+
+      {mode !== 'sequence' && ok.length > 0 && (
+        <div className="flex flex-col gap-1.5 border-b border-line px-2 py-1.5 sm:flex-row">{picker('A', A, setAKey)}{picker('B', B, setBKey)}</div>
+      )}
+
+      {/* image area */}
+      <div className="p-2 sm:p-3 xl:flex xl:flex-1 xl:flex-col xl:p-2">
+        {/* 420px floor via flex-basis (not min-height: cqh resolved to 0 when only min-height gave the size).
+            On short screens the centre column scrolls rather than shrinking the image further. */}
+        <div className="xl:flex-[1_0_420px] xl:[container-type:size]">
+        {ok.length === 0 ? (
+          <div className={`mx-auto flex aspect-square w-full max-w-[560px] flex-col items-center justify-center gap-3 border border-dashed border-line-strong bg-canvas text-xs text-ink-2 ${FIT_SEQ}`}>
+            {nErr === slots.length && slots.length > 0 ? (
+              <>
+                <span className="text-warn">All {nErr} cutout requests failed.</span>
+                <button className={ctl} onClick={onRetryAll}><RotateCw size={14} aria-hidden />Retry failed</button>
+              </>
+            ) : <span className="font-mono">Retrieving first cutout from IRSA…</span>}
+          </div>
+        ) : mode === 'sequence' ? (
+          <div className={`relative mx-auto ${FIT_SEQ}`}>
+            {ok.map((m, k) => (
+              <div key={m.key} className={k === idx ? '' : 'pointer-events-none absolute inset-0 opacity-0'} aria-hidden={k !== idx}>{img(m, undefined, k === idx)}</div>
+            ))}
+          </div>
+        ) : mode === 'side' ? (
+          <div className="grid grid-cols-1 items-start gap-2 sm:grid-cols-2">{A && img(A, 'A', true, FIT_CMP)}{B && img(B, 'B', true, FIT_CMP)}</div>
+        ) : mode === 'blink' ? (
+          <div className={`relative mx-auto ${FIT_CMP}`}>
+            {[A, B].map((m, k) => m && (
+              <div key={k} className={(k === 1) === blinkB ? '' : 'pointer-events-none absolute inset-0 opacity-0'}>{img(m, k ? 'B' : 'A')}</div>
+            ))}
+          </div>
+        ) : (
+          <div>
+            {diffBusy && <p className="py-16 text-center font-mono text-xs text-ink-2" aria-live="polite">Computing A − k·B …</p>}
+            {diffErr && !diffBusy && <p role="alert" className="py-6 text-center text-xs text-warn">{diffErr} <button className="underline" onClick={runDiff}>Retry</button></p>}
+            {diff && !diffBusy && (
+              <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-center">
+                {/* Sized from container units directly (thumb column = 144px + 8px gap); a %-width figure inside a flex-1 item collapsed to 0 at 1280px. */}
+                <div className="min-w-0 md:flex-1 xl:w-[min(calc(100cqw-152px),calc(100cqh-26px))] xl:flex-none">
+                  <SkyImage src={diff.png} alt="Difference image, A minus k times B" kind={diff.demo ? 'demo' : 'derived'} label="A − k·B" className="lg:max-xl:max-w-[calc(100dvh-380px)]"
+                    caption={`±5σ · σ = ${diff.noise_sigma.toPrecision(3)}`} candidates={diff.candidates} selected={cand} onPick={k => onCand(cand === k ? null : k)} />
+                </div>
+                <div className="grid grid-cols-2 gap-2 md:w-36 md:shrink-0 md:grid-cols-1">
+                  {A && <SkyImage src={pngUrl(A.key, stretch, cmap)} alt="Observation A" kind={kind} compact label="A" caption={fmtDate(A).slice(0, 10)} crosshair={false} />}
+                  {B && <SkyImage src={pngUrl(B.key, stretch, cmap)} alt="Observation B" kind={kind} compact label="B" caption={fmtDate(B).slice(0, 10)} crosshair={false} />}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        </div>
+      </div>
+
+      {/* legend: always visible; difference semantics shown in Difference mode */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line px-3 py-1.5 text-[11px] text-ink-2">
+        {mode === 'diff' && (
+          <>
+            {/* Swatches are the coolwarm colour-map ends used in the difference PNG: data colours, same in both themes. */}
+            <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 ring-1 ring-line-strong bg-[#b40426]" aria-hidden /><span className="text-ink">Red = brighter in observation A</span></span>
+            <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 ring-1 ring-line-strong bg-[#3b4cc0]" aria-hidden /><span className="text-ink">Blue = brighter in observation B</span></span>
+            <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 ring-1 ring-line-strong bg-[#dddddd]" aria-hidden />no change (scale ±5σ)</span>
+            <span className="inline-flex items-center">Difference imaging
+              <InfoTip label="Difference imaging" align="end">Observation B is scaled by a fitted flux factor k and subtracted from A after WCS alignment and background removal. Static stars cancel. A source that moved leaves a red/blue pair; a source that changed brightness leaves one colour. Colour scale is ±5σ.</InfoTip>
+            </span>
+          </>
+        )}
+        <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 ring-1 ring-line-strong" style={{ background: 'rgb(78,86,112)' }} aria-hidden />masked (FITS FLAGS) or no coverage</span>
+        {gaia && !demo && <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full border border-gaia" aria-hidden />Gaia DR3</span>}
+        {mode !== 'diff' && <span>Each frame scaled independently</span>}
+        {lamWarn}
+      </div>
+
+      {/* Playback row: on small screens it sticks to the viewport bottom only while this section is on screen
+          (sticky is bounded by the section), and only this slim row sticks — the timeline stays in flow. */}
+      <div className="flex flex-wrap items-center gap-1.5 border-t border-line bg-panel px-3 py-2 max-lg:sticky max-lg:bottom-0 max-lg:z-10 max-lg:shadow-[0_-1px_0_var(--color-line)]">
+          <button className={ctl} onClick={() => setI(Math.max(idx - 1, 0))} disabled={idx === 0} aria-label="Previous frame"><ChevronLeft size={15} aria-hidden /></button>
+          <button className={`${ctl} min-w-20 ${playing ? 'border-accent text-accent-ink' : ''}`} onClick={() => setPlaying(p => !p)}
+            disabled={ok.length < 2 || mode !== 'sequence'} aria-label={playing ? 'Pause' : 'Play'}>
+            {playing ? <Pause size={14} aria-hidden /> : <Play size={14} aria-hidden />}{playing ? 'Pause' : 'Play'}
+          </button>
+          <button className={ctl} onClick={() => setI(Math.min(idx + 1, ok.length - 1))} disabled={idx >= ok.length - 1} aria-label="Next frame"><ChevronRight size={15} aria-hidden /></button>
+          <label className="ml-1 flex items-center gap-1.5 text-[11px] text-ink-2">
+            <span className="hidden sm:inline">Speed</span>
+            <input type="range" min={0.5} max={10} step={0.5} value={fps} onChange={e => setFps(+e.target.value)} className="w-20 sm:w-28" aria-label="Playback speed (frames per second)" />
+            <span className="w-11 font-mono text-ink">{fps} fps</span>
+          </label>
+          <div className="ml-auto text-right leading-tight">
+            <div data-testid="frame-date" aria-live="polite" className="font-mono text-sm font-medium text-ink">{fmtDate(cur)}</div>
+            <div className="font-mono text-[10px] text-ink-3">{ok.length ? idx + 1 : 0}/{ok.length}{cur?.wavelength_at_target ? ` · ${lam(cur)}` : ''}</div>
+          </div>
+      </div>
+
+      <div className="bg-panel px-3 pb-2">
+        <div className="relative h-[58px]" role="group" aria-label="Observation timeline">
+          <div className="absolute inset-x-1.5 top-0 h-[44px]">
+            {months.map((m, k) => (
+              <div key={m.label} className="absolute top-0 h-[44px] border-l border-line" style={{ left: `${m.pos}%` }}>
+                {k % labelEvery === 0 && m.pos < 93 && <span className="absolute left-1 top-[46px] whitespace-nowrap font-mono text-[9px] text-ink-3">{m.label}</span>}
+              </div>
+            ))}
+            <div className="absolute inset-x-0 top-[9px] h-px bg-line-strong" />
+            {dots.map(({ s, pos, row }) => {
+              const okIdx = ok.findIndex(m => m.key === s.meta?.key)
+              const isCur = s.status === 'ok' && okIdx === idx
+              const look = s.status === 'ok' ? (isCur ? 'bg-accent border-accent' : 'bg-ink border-ink hover:bg-ink')
+                : s.status === 'error' ? 'border-warn bg-transparent'
+                : s.status === 'loading' ? 'animate-pulse border-ink-2 bg-ink-3'
+                : 'border-ink-3 bg-transparent' // queued: hollow
+              const date = s.meta?.date_obs ? fmtDate(s.meta) : s.label
+              const state = s.status === 'error' ? `failed: ${s.error} (click to retry)`
+                : s.status === 'loading' ? (s.cached ? 'loading from cache' : 'downloading from IRSA')
+                : s.status === 'pending' ? 'queued' : SOURCE_LABEL[s.source ?? 'grid']
+              return (
+                <button key={s.id} title={`${date} — ${state}`}
+                  style={{ left: `${pos}%`, top: `${4 + row * 12}px` }}
+                  onClick={() => (s.status === 'error' ? onRetry(s.id) : okIdx >= 0 && setI(okIdx))}
+                  className={`absolute h-2.5 w-2.5 -translate-x-1/2 rounded-full border ${look} ${isCur ? 'scale-125' : ''}`}
+                  aria-current={isCur || undefined}
+                  aria-label={s.status === 'error' ? `Retry failed frame ${s.label}` : `Frame ${date} (${s.status})`} />
+              )
+            })}
+            {curDot && <div className="pointer-events-none absolute top-0 h-[44px] w-px bg-accent/50" style={{ left: `${curDot.pos}%` }} aria-hidden />}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 text-[10px] text-ink-3">
+          {timed && !demo && <span className="font-mono">baseline {(t1 - t0).toFixed(0)} d · {slots.length}{totalVisits && totalVisits > slots.length ? ` of ${totalVisits} visits, evenly sampled` : ' visits'}</span>}
+          <span className="hidden sm:inline">← → step · space play/pause</span>
+          {nErr > 0 && <button className="ml-auto inline-flex items-center gap-1 text-warn underline" onClick={onRetryAll}><RotateCw size={11} aria-hidden />Retry failed ({nErr})</button>}
+        </div>
+      </div>
     </section>
   )
 }

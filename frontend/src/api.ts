@@ -1,7 +1,9 @@
 export interface Observation {
   obs_id: string; band: string; access_url: string; mjd_start: number; mjd_end: number
   exptime_s: number; em_min_um: number; em_max_um: number; collection: string
+  cached?: 'grid' | 'cutout' | null   // present when /observations was called with fov
 }
+export type FrameSource = 'grid' | 'cutout-cache' | 'download' | 'shared-download'
 export interface ObsResponse { total_in_band: number; band_counts: Record<string, number>; observations: Observation[] }
 export interface FrameMeta {
   key: string; hdu?: string; date_obs: string | null; date_beg?: string; date_end?: string
@@ -10,6 +12,7 @@ export interface FrameMeta {
   wavelength_at_target: { center_um: number; width_um: number } | null
   flag_counts?: Record<string, number> | null; masked_pixels?: number; coverage_fraction: number
   pipeline_version?: string; exptime_s?: number | null; source_url?: string; demo: boolean; note?: string
+  timing?: { source: FrameSource; download_s?: number; attempts?: number; process_s?: number; total_s?: number }
 }
 export interface Candidate { x: number; y: number; ra: number; dec: number; snr: number; sign: string }
 export interface DiffResult {
@@ -46,6 +49,8 @@ export async function getJSON<T>(path: string, params: Record<string, string | n
     clearTimeout(timer)
   }
 }
+
+export const fmtDate = (m?: FrameMeta) => !m?.date_obs ? '—' : m.demo ? m.date_obs : m.date_obs.replace('T', ' ').slice(0, 19) + ' UTC'
 
 export const pngUrl = (key: string, stretch: string, cmap: string) => `/api/frame/${key}.png?stretch=${stretch}&cmap=${cmap}`
 

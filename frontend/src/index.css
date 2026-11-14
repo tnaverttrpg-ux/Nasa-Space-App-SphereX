@@ -1,25 +1,81 @@
 @import "tailwindcss";
 
-@theme {
-  --color-space-950: #050816;
-  --color-space-900: #0a1024;
-  --color-space-800: #111a35;
-  --color-space-700: #1b2750;
-  --color-space-600: #2a3a6e;
-  --color-cyan-glow: #22d3ee;
-  --color-violet-glow: #a78bfa;
+/*
+  Themes: Graphite Dark + Muted Grey Light, selected by <html data-theme="dark|light">.
+  The attribute is set before first paint by the inline script in index.html (system preference or saved override).
+  Text tokens were nudged from the brief's starting palette only where needed to reach ≥4.5:1 on panel + raised surfaces.
+*/
+:root, :root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #17191a;          /* main background */
+  --panel: #252829;       /* panels */
+  --raised: #2d3132;      /* elevated surfaces, inputs, tooltips */
+  --hover: #303536;       /* slightly lighter than panel */
+  --line: #3b4040;        /* borders, dividers */
+  --line-strong: #4a5050; /* control borders */
+  --ink: #d5d0c5;         /* primary text */
+  --ink-2: #a3a49a;       /* secondary text */
+  --ink-3: #9b9a91;       /* muted labels (4.6:1 on panel) */
+  --accent: #b58b65;      /* copper: fills, borders, focus */
+  --accent-ink: #b9926e;  /* copper as text (4.6:1 on raised) */
+  --warn: #d9a84e;        /* warnings + demo data */
+  --diff-a: #e47889;      /* "brighter in A" as text */
+  --diff-b: #7499e2;      /* "brighter in B" as text */
+  --gaia: #4ade80;        /* Gaia catalogue as UI colour */
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #d6d7d3;
+  --panel: #e6e7e2;
+  --raised: #f0f0eb;
+  --hover: #dcddd8;       /* subtly darker than panel */
+  --line: #bfc3bd;
+  --line-strong: #a9aea7;
+  --ink: #303735;
+  --ink-2: #575d5a;       /* brief: #737a76 (3.5:1) → darkened to 4.7:1 */
+  --ink-3: #636762;
+  --accent: #966f4e;
+  --accent-ink: #815f43;
+  --warn: #885e0c;
+  --diff-a: #be2b42;
+  --diff-b: #3462bc;
+  --gaia: #1f8a4c;
+}
+
+@theme inline {
+  --color-canvas: var(--bg);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-hover: var(--hover);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-warn: var(--warn);
+  --color-diff-a: var(--diff-a);
+  --color-diff-b: var(--diff-b);
+  --color-gaia: var(--gaia);
   --font-sans: "Inter", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
 }
 
 html, body, #root { min-height: 100%; }
 body {
   margin: 0;
-  background: radial-gradient(1200px 600px at 70% -10%, #1a1446 0%, transparent 60%),
-              radial-gradient(900px 500px at -10% 10%, #062a3a 0%, transparent 55%), #050816;
-  color: #dbe4ff;
+  background: var(--bg);
+  color: var(--ink);
   font-family: var(--font-sans);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
+.font-mono { font-variant-numeric: tabular-nums slashed-zero; }
 .pixelated { image-rendering: pixelated; }
-input[type="range"] { accent-color: #22d3ee; }
-:focus-visible { outline: 2px solid #22d3ee; outline-offset: 2px; }
+input[type="range"], input[type="checkbox"] { accent-color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+::placeholder { color: var(--ink-3); opacity: 1; }

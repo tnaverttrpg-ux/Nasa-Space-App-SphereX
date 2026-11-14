@@ -5,7 +5,17 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-  { ignores: ['dist'] },
+  { ignores: ['dist', 'e2e/screenshots'] },
+  {
+    // Browser suites: Node scripts whose page.evaluate/waitForFunction callbacks run in the browser.
+    extends: [js.configs.recommended],
+    files: ['e2e/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: { ...globals.node, ...globals.browser },
+    },
+  },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],

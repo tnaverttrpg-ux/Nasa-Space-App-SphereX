@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import hashlib
+import io
 import json
 import threading
 import time
@@ -30,10 +31,11 @@ def _archive_err(_, e: ArchiveError):
     return JSONResponse({"detail": str(e)}, status_code=e.status)
 
 
-def _save(key, arr, foot, meta):
+def _save(key, arr, foot, meta, offdet=None):
     # npz first, json last, each via temp file + atomic rename: the json is the "grid is complete" marker.
     tmp = GRIDS / f"{key}.{threading.get_ident()}.tmp.npz"
-    np.savez_compressed(tmp, arr=arr, foot=foot)
+    extra = {} if offdet is None else {"offdet": offdet}
+    np.savez_compressed(tmp, arr=arr, foot=foot, **extra)
     _publish(tmp, GRIDS / f"{key}.npz")
     tmpj = GRIDS / f"{key}.{threading.get_ident()}.tmp.json"
     tmpj.write_text(json.dumps(meta))
@@ -49,6 +51,27 @@ def _publish(tmp, dest):
         if not dest.exists():
             raise
         tmp.unlink(missing_ok=True)
+
+
+def _grid_ok(key):
+    """A grid counts as cached only if its marker json AND a readable npz exist; damaged pairs are removed and rebuilt."""
+    j, z = GRIDS / f"{key}.json", GRIDS / f"{key}.npz"
+    if not j.exists():
+        return False
+    try:
+        # Parse from memory: np.load on a corrupt file leaks its handle on Windows, which would block the cleanup below.
+        with np.load(io.BytesIO(z.read_bytes())) as f:
+            f["arr"], f["foot"]
+        json.loads(j.read_text())
+        return True
+    except Exception:
+        archive.log.warning("grid cache CORRUPT %s - removed, will rebuild", key)
+        for p in (j, z):  # json (the "complete" marker) first; a leftover npz is simply overwritten on rebuild
+            try:
+                p.unlink(missing_ok=True)
+            except OSError as e:
+                archive.log.warning("could not remove %s: %s", p.name, e)
+        return False
 
 
 def _grid_key(url, ra, dec, fov):
@@ -69,7 +92,8 @@ def _load(key):
         raise HTTPException(404, "frame not processed yet")
     with np.load(f) as z:  # close the handle: an open .npz blocks atomic renames on Windows
         arr, foot = z["arr"], z["foot"]
-    return arr, foot, json.loads((GRIDS / f"{key}.json").read_text())
+        offdet = z["offdet"] if "offdet" in z.files else None  # demo grids have none
+    return arr, foot, json.loads((GRIDS / f"{key}.json").read_text()), offdet
 
 
 @app.get("/api/health")
@@ -106,7 +130,7 @@ async def frame(request: Request, url: str, ra: float = RA, dec: float = DEC, fo
     """Cached grid, else cached cutout, else (deduplicated, rate-limited) IRSA download; then parse + reproject."""
     t0 = time.perf_counter()
     key = _grid_key(url, ra, dec, fov)
-    if (GRIDS / f"{key}.json").exists():
+    if _grid_ok(key):
         archive.log.info("cache HIT grid %s", key)
         return {"key": key, **json.loads((GRIDS / f"{key}.json").read_text()), "timing": {"source": "grid", "total_s": round(time.perf_counter() - t0, 3)}}
     archive.check_url(url)
@@ -134,11 +158,11 @@ async def frame(request: Request, url: str, ra: float = RA, dec: float = DEC, fo
         timing = {"source": "shared-download" if shared else "download", **info}
     t1 = time.perf_counter()
     try:
-        arr, foot, meta = await run_in_threadpool(fitsproc.process_cutout, raw, ra, dec, fov)
+        arr, foot, meta, offdet = await run_in_threadpool(fitsproc.process_cutout, raw, ra, dec, fov)
     except Exception as e:
         raise HTTPException(422, f"FITS processing failed: {e}")
     meta.update({"source_url": url, "exptime_s": exptime_s, "grid": {"ra": ra, "dec": dec, "fov": fov}, "demo": False})
-    await run_in_threadpool(_save, key, arr, foot, meta)
+    await run_in_threadpool(_save, key, arr, foot, meta, offdet)
     timing.update({"process_s": round(time.perf_counter() - t1, 3), "total_s": round(time.perf_counter() - t0, 2)})
     return {"key": key, **meta, "timing": timing}
 
@@ -146,20 +170,21 @@ async def frame(request: Request, url: str, ra: float = RA, dec: float = DEC, fo
 @app.get("/api/frame/{key}.png")
 def frame_png(key: str, stretch: str = Query("asinh", pattern="^(asinh|linear)$"),
               cmap: str = Query("inferno", pattern="^(inferno|gray|viridis|magma)$")):
-    arr, _, _ = _load(key)
-    return Response(fitsproc.render(arr, stretch, cmap), media_type="image/png",
+    arr, _, _, offdet = _load(key)
+    return Response(fitsproc.render(arr, stretch, cmap, offdet), media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/api/diff")
 def diff(a: str, b: str, nsig: float = Query(5.0, ge=3, le=20)):
-    arr_a, fa, ma = _load(a)
-    arr_b, fb, mb = _load(b)
+    arr_a, fa, ma, oa = _load(a)
+    arr_b, fb, mb, ob = _load(b)
     if arr_a.shape != arr_b.shape:
         raise HTTPException(400, "frames are on different grids")
     g = ma["grid"]
     w, _ = fitsproc.grid_wcs(g["ra"], g["dec"], g["fov"])
-    out = fitsproc.difference(arr_a, fa, arr_b, fb, w, nsig)
+    offdet = None if oa is None or ob is None else (oa | ob)  # not observed in A or in B
+    out = fitsproc.difference(arr_a, fa, arr_b, fb, w, nsig, offdet=offdet)
     out["png"] = "data:image/png;base64," + base64.b64encode(out["png"]).decode()
     out["kind"] = "derived"
     out["demo"] = bool(ma.get("demo"))

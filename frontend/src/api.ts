@@ -11,6 +11,9 @@ export interface FrameMeta {
   native_pixscale_arcsec?: number; native_rotation_deg?: number; native_shape?: number[]
   wavelength_at_target: { center_um: number; width_um: number } | null
   flag_counts?: Record<string, number> | null; masked_pixels?: number; coverage_fraction: number
+  off_detector_fraction?: number
+  // From the pipeline's linear WCS 'A' (0-based active pixels); null when it cannot be derived exactly.
+  detector_position?: { x: number; y: number; edge_px: number; active_size: number } | null
   pipeline_version?: string; exptime_s?: number | null; source_url?: string; demo: boolean; note?: string
   timing?: { source: FrameSource; download_s?: number; attempts?: number; process_s?: number; total_s?: number }
 }

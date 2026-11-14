@@ -241,7 +241,9 @@ export default function Viewer({ slots, demo, band, totalVisits, gaia, stretch, 
             </span>
           </>
         )}
-        <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 ring-1 ring-line-strong" style={{ background: 'rgb(78,86,112)' }} aria-hidden />masked (FITS FLAGS) or no coverage</span>
+        {/* Same colours the backend paints (fitsproc MASK_RGB / OFFDET_RGB + hatch); display only, never data. */}
+        <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 ring-1 ring-line-strong" style={{ background: 'rgb(118,120,124)' }} aria-hidden />masked (FITS flags)</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 ring-1 ring-line-strong" style={{ background: 'repeating-linear-gradient(135deg, rgb(66,68,72) 0 1px, rgb(46,47,50) 1px 4px)' }} aria-hidden />outside detector (not observed)</span>
         {gaia && !demo && <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full border border-gaia" aria-hidden />Gaia DR3</span>}
         {mode !== 'diff' && <span>Each frame scaled independently</span>}
         {lamWarn}

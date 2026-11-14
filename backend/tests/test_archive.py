@@ -24,7 +24,10 @@ class FakeIRSA:
 
     def stream(self, method, url):
         self.calls += 1
-        status, body = self.script.pop(0) if self.script else (200, fits_bytes())
+        item = self.script.pop(0) if self.script else (200, fits_bytes())
+        if isinstance(item, Exception):
+            raise item
+        status, body = item
         fake = self
 
         class Resp:

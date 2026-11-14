@@ -18,8 +18,12 @@ from reproject import reproject_interp
 log.setLevel("WARNING")
 warnings.simplefilter("ignore", FITSFixedWarning)
 
-MASK_RGB = (78, 86, 112)  # masked / uncovered pixels: neutral grey, distinct from sky
-PROC_VERSION = 2  # bump when processing changes; invalidates cached grids
+MASK_RGB = (118, 120, 124)     # flagged/invalid observed pixels: light neutral grey
+OFFDET_RGB = (46, 47, 50)      # never observed (outside the detector): dark neutral grey ...
+OFFDET_HATCH = (66, 68, 72)    # ... with a fine diagonal hatch so it never reads as dark sky
+# v3: adds the off-detector mask and detector position (display metadata only; science arrays unchanged).
+PROC_VERSION = 3  # bump when processing changes; invalidates cached grids
+DETECTOR_ACTIVE_PX = 2040      # SPHEREx L2 active area (NAXIS1/2 of the full-frame IMAGE HDU)
 GRID_SCALE_DEG = 6.15 / 3600  # nominal SPHEREx pixel scale
 # Pixels with these flag planes are unusable for comparison. SOURCE/GHOST/HALO etc. are reported, not masked.
 BAD_PLANES = {"TRANSIENT", "OVERFLOW", "SUR_ERROR", "NONFUNC", "MISSING_DATA", "HOT", "COLD", "PERSIST", "OUTLIER"}
@@ -48,8 +52,48 @@ def science_hdu(hdul):
     raise ValueError("no 2-D science image with a celestial WCS found")
 
 
+def detector_position(hdr, wcs, ra, dec, shape):
+    """Target position on the detector from the pipeline's alternate WCS 'A' ("0-based active pixel coordinates").
+    Returns None unless that WCS is present and the whole cutout maps inside the active area (so the value is exact,
+    not an estimate)."""
+    try:
+        if not str(hdr.get("WCSNAMEA", "")).strip().lower().startswith("0-based active pixel"):
+            return None
+        # Apply 'A' exactly as declared: a pure LINEAR offset. Not via astropy WCS(key="A"), which would also attach the
+        # header's (key-less) SIP distortion terms and shift the result by ~10-20 px.
+        if any(str(hdr.get(f"CTYPE{i}A", "")).strip().upper() != "LINEAR" for i in (1, 2)) or \
+           any(f"PC{i}_{j}A" in hdr or f"CD{i}_{j}A" in hdr for i in (1, 2) for j in (1, 2)):
+            return None
+        lin = lambda p, i: (p + 1 - float(hdr[f"CRPIX{i}A"])) * float(hdr.get(f"CDELT{i}A", 1.0)) + float(hdr.get(f"CRVAL{i}A", 0.0))
+        ny, nx = shape
+        n = DETECTOR_ACTIVE_PX
+        cx0, cx1, cy0, cy1 = lin(0, 1), lin(nx - 1, 1), lin(0, 2), lin(ny - 1, 2)
+        x, y = wcs.world_to_pixel_values(ra, dec)
+        dx, dy = lin(float(x), 1), lin(float(y), 2)
+        vals = [cx0, cx1, cy0, cy1, dx, dy]
+        if not all(np.isfinite(vals)) or min(vals) < 0 or max(vals) > n - 1:
+            return None
+        return {"x": round(dx, 1), "y": round(dy, 1), "edge_px": round(min(dx, dy, n - 1 - dx, n - 1 - dy), 1), "active_size": n}
+    except Exception:
+        return None
+
+
+def off_detector_mask(wcs, shape, target, grid_shape, arr):
+    """Grid pixels whose centre falls outside the retrieved cutout. The cutout box is 1.5x the field, which covers the
+    grid at any rotation, so within the grid this only happens where IRSA clipped the cutout at the detector edge.
+    Only pixels that are already NaN can be flagged: data are never recoloured."""
+    ny, nx = shape
+    yy, xx = np.mgrid[0:grid_shape[0], 0:grid_shape[1]]
+    with np.errstate(all="ignore"):
+        sky = target.pixel_to_world_values(xx.ravel(), yy.ravel())
+        px, py = wcs.world_to_pixel_values(*sky)
+    px, py = np.asarray(px).reshape(grid_shape), np.asarray(py).reshape(grid_shape)
+    inside = np.isfinite(px) & np.isfinite(py) & (px >= 0) & (px <= nx - 1) & (py >= 0) & (py <= ny - 1)
+    return ~inside & ~np.isfinite(arr)
+
+
 def process_cutout(fits_bytes, ra, dec, fov):
-    """Return (grid image, footprint, measured metadata) for one SPHEREx cutout."""
+    """Return (grid image, footprint, measured metadata, off-detector mask) for one SPHEREx cutout."""
     with fits.open(io.BytesIO(fits_bytes)) as hdul:
         hdu = science_hdu(hdul)
         hdr = hdu.header
@@ -79,6 +123,7 @@ def process_cutout(fits_bytes, ra, dec, fov):
 
         target, shape = grid_wcs(ra, dec, fov)
         arr, foot = reproject_interp((data, wcs), target, shape_out=shape)
+        offdet = off_detector_mask(wcs, data.shape, target, shape, arr)
 
         date = hdr.get("DATE-AVG") or hdr.get("DATE-OBS")
         mjd = hdr.get("MJD-AVG") or hdr.get("MJD-OBS")
@@ -103,9 +148,11 @@ def process_cutout(fits_bytes, ra, dec, fov):
             "flag_counts": flag_counts,
             "masked_pixels": masked,
             "coverage_fraction": round(float(np.mean(foot > 0.5)), 3),
+            "off_detector_fraction": round(float(offdet.mean()), 3),
+            "detector_position": detector_position(hdr, wcs, ra, dec, data.shape),
             "pipeline_version": hdul[0].header.get("VERSION"),
         }
-    return arr.astype("float32"), (foot > 0.5), meta
+    return arr.astype("float32"), (foot > 0.5), meta, offdet
 
 
 def _robust(a):
@@ -123,7 +170,18 @@ def _png(rgb):
     return buf.getvalue()
 
 
-def render(arr, stretch="asinh", cmap="inferno"):
+def _paint_no_data(rgb, good, offdet):
+    """Flagged/invalid pixels light grey; never-observed (off-detector) pixels dark grey with a diagonal hatch.
+    Operates in FITS row order (before the north-up flip)."""
+    rgb[~good] = MASK_RGB
+    if offdet is not None and offdet.shape == good.shape:
+        yy, xx = np.indices(good.shape)
+        hatch = ((xx + yy) % 6) == 0
+        rgb[offdet] = OFFDET_RGB
+        rgb[offdet & hatch] = OFFDET_HATCH
+
+
+def render(arr, stretch="asinh", cmap="inferno", offdet=None):
     """ZScale + stretch -> PNG bytes. Row 0 is south in FITS, so flip for display (north up)."""
     a = np.array(arr, dtype="float64")
     good = np.isfinite(a)
@@ -137,7 +195,7 @@ def render(arr, stretch="asinh", cmap="inferno"):
         norm = np.clip((np.where(good, a, lo) - lo) / (hi - lo), 0, 1)
         norm = (AsinhStretch(0.1) if stretch == "asinh" else LinearStretch())(norm)
     rgb = (colormaps[cmap](norm)[..., :3] * 255).astype("uint8")
-    rgb[~good] = MASK_RGB
+    _paint_no_data(rgb, good, offdet)
     return _png(np.flipud(rgb))
 
 
@@ -159,8 +217,9 @@ def _shift(a, b, window=4):
     return out
 
 
-def difference(a, fa, b, fb, wcs, nsig=5.0, max_cand=25):
-    """A - B after per-frame background removal. Returns png, noise, registration offset, candidates."""
+def difference(a, fa, b, fb, wcs, nsig=5.0, max_cand=25, offdet=None):
+    """A - B after per-frame background removal. Returns png, noise, registration offset, candidates.
+    `offdet` (pixels off the detector in A or B) only changes how no-data pixels are drawn."""
     both = fa & fb
     a = np.where(both, a, np.nan)
     b = np.where(both, b, np.nan)
@@ -173,7 +232,7 @@ def difference(a, fa, b, fb, wcs, nsig=5.0, max_cand=25):
     _, sig = _robust(d)
     norm = np.clip(np.nan_to_num(d / (5 * sig)) * 0.5 + 0.5, 0, 1)
     rgb = (colormaps["coolwarm"](norm)[..., :3] * 255).astype("uint8")
-    rgb[~both] = MASK_RGB
+    _paint_no_data(rgb, both, offdet)
 
     cand = []
     s = np.nan_to_num(np.abs(d) / sig)

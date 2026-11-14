@@ -459,8 +459,14 @@ function MeasuredPanel({ m }: { m: FrameMeta }) {
           <Row k="Native pixel scale" v={m.native_pixscale_arcsec ? `${m.native_pixscale_arcsec.toFixed(2)}″` : null} />
           <Row k="Native rotation" v={m.native_rotation_deg != null ? `${m.native_rotation_deg.toFixed(2)}°` : null} />
           <Row k="Science HDU" v={m.hdu} />
-          <Row k="Masked pixels" v={m.masked_pixels} />
-          <Row k="Field coverage" v={`${Math.round(m.coverage_fraction * 100)}%`} />
+          {/* Counted over the retrieved native cutout, which can be larger than the field when a cached cutout is reused. */}
+          <Row k="Masked pixels (native cutout)" v={m.masked_pixels != null && m.native_shape ? `${m.masked_pixels} / ${m.native_shape[1]}×${m.native_shape[0]}` : m.masked_pixels} />
+          <Row k={<>Field coverage<InfoTip label="Field coverage" align="start">Percentage of the displayed field containing valid observed data after excluding masked pixels. Areas outside the detector are not observed.</InfoTip></>}
+            v={`${Math.round(m.coverage_fraction * 100)}%`} />
+          {m.detector_position && (
+            <Row k={<span title="Distance from the target to the nearest edge of the 2040 × 2040 active detector area, from the pipeline's detector-pixel WCS">Target → detector edge</span>}
+              v={<>{m.detector_position.edge_px.toFixed(0)} px <span className="text-ink-3">(x {m.detector_position.x.toFixed(0)}, y {m.detector_position.y.toFixed(0)})</span></>} />
+          )}
           <Row k="Pipeline" v={m.pipeline_version} />
           {m.flag_counts && (
             <div className="py-1.5">

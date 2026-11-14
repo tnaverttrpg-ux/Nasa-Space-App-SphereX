@@ -79,3 +79,7 @@ body {
 input[type="range"], input[type="checkbox"] { accent-color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 ::placeholder { color: var(--ink-3); opacity: 1; }
+
+/* Toasts sit below the toolbar (offset in App.tsx). Sonner slides new toasts in from above, which briefly crossed
+   the toolbar and swallowed clicks; clip the toaster at the toolbar edge (8 px margin keeps the close button). */
+[data-sonner-toaster] { clip-path: inset(-8px -100vw -100vh -100vw); }

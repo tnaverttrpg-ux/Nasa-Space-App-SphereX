@@ -74,6 +74,14 @@ export default function App() {
   const [workspace, setWorkspace] = useState<'viewer' | 'dashboard'>('viewer')
   const [jumpTo, setJumpTo] = useState<{ key: string; seq: number } | null>(null)
   const run = useRef<AbortController | null>(null)
+  const headerRef = useRef<HTMLElement>(null)
+  const [headerH, setHeaderH] = useState(44)
+  useEffect(() => {
+    if (!headerRef.current) return
+    const ro = new ResizeObserver(([e]) => setHeaderH(Math.ceil(e.target.getBoundingClientRect().height)))
+    ro.observe(headerRef.current)
+    return () => ro.disconnect()
+  }, [])
   const viewerRef = useRef<HTMLDivElement>(null)
 
   const loadPresets = useCallback(() => {
@@ -159,14 +167,26 @@ export default function App() {
       .catch(e => { setGaia(null); setGaiaMsg(`Gaia overlay unavailable: ${e.message}`); toast.error('Gaia DR3 overlay unavailable', { description: e.message }) })
   }, [gaiaOn, active, demo])
 
+  // Retries run in the background: progress shows inline in the toolbar status, never as a persistent toast
+  // (a loading toast used to sit on top of the toolbar's workspace/theme switches for the whole retry).
+  const retryingRef = useRef(new Set<string>())
+  const [retrying, setRetrying] = useState(0)
   const retry = async (ids: string[]) => {
-    if (!active || !ids.length) return
-    const signal = (run.current ??= new AbortController()).signal
-    const t = toast.loading(`Retrying ${ids.length} observation(s)…`)
-    const res = await Promise.all(slots.filter(s => ids.includes(s.id)).map(s => loadFrame(s, active, signal)))
+    if (!active) return
+    const fresh = ids.filter(id => !retryingRef.current.has(id))   // never retry the same frame twice concurrently
+    if (!fresh.length) return
+    fresh.forEach(id => retryingRef.current.add(id)); setRetrying(retryingRef.current.size)
+    const signal = (run.current ??= new AbortController()).signal  // same cancellation as the search it belongs to
+    let res: boolean[] = []
+    try {
+      res = await Promise.all(slots.filter(s => fresh.includes(s.id)).map(s => loadFrame(s, active, signal)))
+    } finally {
+      fresh.forEach(id => retryingRef.current.delete(id)); setRetrying(retryingRef.current.size)
+    }
+    if (signal.aborted) return                                       // superseded by a new search: say nothing
     const bad = res.filter(x => !x).length
-    if (bad) toast.error(`${bad} observation(s) still failing`, { id: t, description: 'IRSA may be busy. Try again shortly.' })
-    else toast.success('Retry succeeded', { id: t })
+    if (bad) toast.error(`${bad} of ${fresh.length} retried observation(s) still failing`, { description: 'IRSA may be busy. Try again shortly.' })
+    else toast.success(`${fresh.length} observation(s) recovered`, { duration: 2500 })
   }
 
   const resolveName = async () => {
@@ -209,7 +229,7 @@ export default function App() {
   return (
     <div className="flex min-h-dvh flex-col xl:h-dvh xl:overflow-hidden">
       {/* toolbar */}
-      <header className="flex min-h-11 flex-wrap items-center gap-x-5 gap-y-1 border-b border-line bg-panel px-3 py-1.5">
+      <header ref={headerRef} className="flex min-h-11 flex-wrap items-center gap-x-5 gap-y-1 border-b border-line bg-panel px-3 py-1.5">
         <div className="flex items-center gap-2">
           <img src="/favicon.svg" alt="" className="h-5 w-5" />
           <h1 className="text-[13px] font-semibold tracking-[0.12em] text-ink">SPHERE TRACK</h1>
@@ -225,6 +245,11 @@ export default function App() {
         <div className="ml-auto flex items-center gap-2 text-[12px]" role="status" aria-live="polite">
           <span className={`h-2 w-2 rounded-full ${dot}`} aria-hidden />
           <span className="text-ink-3">{demo ? 'DEMO' : 'IRSA'}</span>{status}
+          {retrying > 0 && (
+            <span data-testid="retry-progress" className="inline-flex items-center gap-1 text-accent-ink">
+              <RotateCw size={12} className="animate-spin" aria-hidden />Retrying <span className="font-mono">{retrying}</span>
+            </span>
+          )}
         </div>
         {slots.length > 0 && (
           // Workspace switch lives in the toolbar so it costs the image no vertical space.
@@ -446,6 +471,8 @@ export default function App() {
         </aside>
       </div>
       <Toaster theme={theme.resolved} position="top-right" closeButton
+        // Below the toolbar, and expanded: Sonner's collapsed stack shifts older toasts upward, back over the toolbar.
+        offset={{ top: headerH + 8, right: 12 }} mobileOffset={{ top: headerH + 8, left: 8, right: 8 }} expand visibleToasts={3}
         toastOptions={{ style: { fontFamily: 'Inter, system-ui, sans-serif', borderRadius: 3, background: 'var(--raised)', color: 'var(--ink)', border: '1px solid var(--line-strong)' } }} />
     </div>
   )

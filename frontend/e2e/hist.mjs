@@ -1,8 +1,8 @@
 // Browser checks for the intensity histogram (real Barnard D6 frames), both themes + mobile.
 import { chromium } from 'playwright-core'
-import { LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
+import { APP, LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
 const S = OUT
-const URL = `${ORIGIN}/?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=12`
+const URL = `${APP}?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=12`
 const results = []
 const check = async (name, fn) => { try { results.push(['PASS', name, (await fn()) ?? '']) } catch (e) { results.push(['FAIL', name, String(e.message).split('\n')[0]]) } }
 const fmt = v => (Math.abs(v) >= 1000 || (Math.abs(v) < 0.01 && v !== 0) ? v.toExponential(2) : v.toPrecision(3))

@@ -23,13 +23,15 @@ const run = s => new Promise(resolve => {
   const t0 = Date.now(), c = spawn(process.execPath, [fileURLToPath(new URL(`${s}.mjs`, dir))], { stdio: ['ignore', 'pipe', 'inherit'] })
   let out = ''
   c.stdout.on('data', d => { out += d; process.stdout.write(d) })
-  c.on('close', code => resolve({ s, code, secs: (Date.now() - t0) / 1000, tally: [...out.matchAll(/^(\d+)\/(\d+) passed$/gm)].at(-1)?.slice(1).map(Number) }))   // some suites print diagnostics after it
+  c.on('close', code => resolve({ s, code, secs: (Date.now() - t0) / 1000, tally: [...out.matchAll(/^(\d+)\/(\d+) passed(?:, (\d+) skipped)?$/gm)].at(-1)?.slice(1).map(v => Number(v ?? 0)) }))   // some suites print diagnostics after it
 })
 
 const rows = []
 for (const s of suites) { console.log(`\n=== ${s}`); rows.push(await run(s)) }
-console.log('\nSuite        Result        Time')
-for (const r of rows) console.log(`${r.s.padEnd(12)} ${(r.tally ? `${r.tally[0]}/${r.tally[1]}` : 'crashed').padEnd(7)} ${r.code === 0 ? 'ok  ' : 'FAIL'}  ${r.secs.toFixed(0).padStart(4)} s`)
-const pass = rows.reduce((a, r) => a + (r.tally?.[0] ?? 0), 0), total = rows.reduce((a, r) => a + (r.tally?.[1] ?? 0), 0), bad = rows.filter(r => r.code !== 0)
-console.log(`\n${pass}/${total} checks passed in ${rows.length} suites${bad.length ? `; failing: ${bad.map(r => r.s).join(', ')}` : ''}`)
+const res = r => r.tally ? `${r.tally[0]}/${r.tally[1]}${r.tally[2] ? ` +${r.tally[2]} skip` : ''}` : 'crashed'
+const W = Math.max(7, ...rows.map(r => res(r).length))
+console.log(`\n${'Suite'.padEnd(12)} ${'Result'.padEnd(W)}       Time`)
+for (const r of rows) console.log(`${r.s.padEnd(12)} ${res(r).padEnd(W)} ${r.code === 0 ? 'ok  ' : 'FAIL'}  ${r.secs.toFixed(0).padStart(4)} s`)
+const sum = i => rows.reduce((a, r) => a + (r.tally?.[i] ?? 0), 0), bad = rows.filter(r => r.code !== 0)
+console.log(`\n${sum(0)}/${sum(1)} checks passed in ${rows.length} suites${sum(2) ? `; ${sum(2)} skipped: external service confirmed unavailable (see SKIP lines)` : ''}${bad.length ? `; failing: ${bad.map(r => r.s).join(', ')}` : ''}`)
 process.exitCode = bad.length ? 1 : 0

@@ -1,6 +1,6 @@
 // Browser checks of the Pipeline QA inspector section across every Barnard D6 frame, both themes.
 import { chromium } from 'playwright-core'
-import { LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
+import { APP, LAUNCH, OUT, report } from './lib.mjs'
 const S = OUT
 const ADV = 'The pipeline reports satellite streak activity. Reported streaks may lie outside this displayed field, and additional unflagged linear trails may remain. Inspect linear residuals across multiple observations before interpreting them as astronomical sources.'
 const results = []
@@ -8,7 +8,7 @@ const check = async (name, fn) => { try { results.push(['PASS', name, (await fn(
 const b = await chromium.launch(LAUNCH)
 for (const scheme of ['dark', 'light']) {
   const p = await (await b.newContext({ colorScheme: scheme, viewport: { width: 1440, height: 1000 } })).newPage()
-  await p.goto(`${ORIGIN}/?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=12`)
+  await p.goto(`${APP}?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=12`)
   await p.waitForFunction(() => /Loaded \d+\/\d+ frames/.test(document.querySelector('[role="status"]')?.textContent ?? ''), null, { timeout: 500000 })
   const qa = p.getByRole('region', { name: 'Pipeline QA' })
   const n = Number((await p.getByTestId('frame-date').locator('xpath=following-sibling::div').innerText()).match(/\/(\d+)/)[1])
@@ -53,7 +53,7 @@ for (const scheme of ['dark', 'light']) {
   })
   await qa.screenshot({ path: `${S}qa-${scheme}.png` })
   await check(`[${scheme}] demo frames show no Pipeline QA section`, async () => {
-    await p.goto(`${ORIGIN}/?demo=1`); await p.getByText(/DEMO MODE\./).waitFor()
+    await p.goto(`${APP}?demo=1`); await p.getByText(/DEMO MODE\./).waitFor()
     if (await p.getByRole('region', { name: 'Pipeline QA' }).count()) throw new Error('QA shown for synthetic data')
   })
   await p.close()

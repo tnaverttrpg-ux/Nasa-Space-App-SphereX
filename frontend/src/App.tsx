@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Crosshair, FlaskConical, RotateCw, Search, Telescope, Image as ImageIcon, LayoutDashboard, Map as MapIcon } from 'lucide-react'
+import { CircleHelp, Crosshair, FlaskConical, RotateCw, Search, Telescope, Image as ImageIcon, LayoutDashboard, Map as MapIcon } from 'lucide-react'
 import { toast, Toaster } from 'sonner'
 import { BANDS, fmtDate, getJSON, type DiffResult, type Observation, type FrameMeta, type GaiaSource, type ObsResponse, type Preset } from './api'
 import InfoTip from './components/InfoTip'
 import Histogram from './components/Histogram'
 import PixelInspector, { type PixelSel } from './components/PixelInspector'
 import Dashboard from './components/Dashboard'
+import Guide, { GUIDE_KEY } from './components/Guide'
 import SkyMap from './components/SkyMap'
 import ThemeSwitch from './components/ThemeSwitch'
 import Viewer, { type Slot } from './components/Viewer'
@@ -78,6 +79,9 @@ export default function App() {
   const [jumpTo, setJumpTo] = useState<{ key: string; seq: number } | null>(null)
   const [pixelSel, setPixelSel] = useState<PixelSel | null>(null)
   const [clearPixel, setClearPixel] = useState(0)
+  // First-use guide: shown in the empty start state until dismissed (remembered); the toolbar button reopens it.
+  const [guideSeen, setGuideSeen] = useState(() => { try { return localStorage.getItem(GUIDE_KEY) === '1' } catch { return false } })
+  const [guideOpen, setGuideOpen] = useState(false)
   const run = useRef<AbortController | null>(null)
   const headerRef = useRef<HTMLElement>(null)
   const [headerH, setHeaderH] = useState(44)
@@ -242,17 +246,22 @@ export default function App() {
     : phase === 'error' ? <span className="text-warn">Archive request failed</span>
     : phase === 'empty' ? <span className="text-ink">No observations</span>
     : <span className="text-ink-3">Idle</span>
+  const showGuide = guideOpen || (!guideSeen && phase === 'idle')
+  const dismissGuide = () => {
+    setGuideOpen(false); setGuideSeen(true)
+    try { localStorage.setItem(GUIDE_KEY, '1') } catch { /* storage blocked: dismissed for this session only */ }
+  }
   const dot = demo || phase === 'error' || nErr ? 'bg-warn' : phase === 'querying' || phase === 'loading' ? 'animate-pulse bg-accent' : phase === 'done' ? 'bg-accent' : 'bg-ink-3'
 
   return (
     <div className="flex min-h-dvh flex-col xl:h-dvh xl:overflow-hidden">
       {/* toolbar */}
       <header ref={headerRef} className="flex min-h-11 flex-wrap items-center gap-x-5 gap-y-1 border-b border-line bg-panel px-3 py-1.5">
-        <div className="flex items-center gap-2">
+        <a href="/" className="flex items-center gap-2 rounded-sm" title="SPHERE TRACK home page">
           <img src="/favicon.svg" alt="" className="h-5 w-5" />
           <h1 className="text-[13px] font-semibold tracking-[0.12em] text-ink">SPHERE TRACK</h1>
           <span className="hidden text-[11px] text-ink-3 md:inline">SPHEREx time-series explorer</span>
-        </div>
+        </a>
         {active && !demo && (
           <div className="flex items-baseline gap-2 font-mono text-[12px]" aria-label="Current field">
             <span className="text-[10px] font-sans text-ink-3">FIELD</span>
@@ -272,14 +281,19 @@ export default function App() {
         {slots.length > 0 && (
           // Workspace switch lives in the toolbar so it costs the image no vertical space.
           <div role="tablist" aria-label="Workspace" className="flex h-7 shrink-0 rounded-sm border border-line-strong">
-            {([['viewer', 'Viewer', ImageIcon], ['dashboard', 'Dashboard', LayoutDashboard], ['map', 'Sky map', MapIcon]] as const).map(([w, l, Icon]) => (
-              <button key={w} role="tab" aria-selected={workspace === w} onClick={() => setWorkspace(w)}
+            {([['viewer', 'Viewer', ImageIcon, 'Images, playback and comparison of dates'], ['dashboard', 'Dashboard', LayoutDashboard, 'Quality, coverage and timing of the loaded observations'],
+              ['map', 'Sky map', MapIcon, 'Archive footprints of every observation around the target']] as const).map(([w, l, Icon, tip]) => (
+              <button key={w} role="tab" aria-selected={workspace === w} onClick={() => setWorkspace(w)} title={tip}
                 className={`inline-flex items-center gap-1.5 px-2.5 text-[11px] font-medium ${workspace === w ? 'bg-accent/15 text-accent-ink' : 'text-ink-3 hover:text-ink'}`}>
                 <Icon size={13} aria-hidden />{l}
               </button>
             ))}
           </div>
         )}
+        <button type="button" onClick={() => (showGuide ? dismissGuide() : setGuideOpen(true))} aria-expanded={showGuide} aria-controls={showGuide ? 'guide' : undefined}
+          className={`inline-flex h-7 shrink-0 items-center gap-1 rounded-sm border border-line-strong px-2 text-[11px] ${showGuide ? 'bg-accent/15 text-accent-ink' : 'text-ink-3 hover:text-ink'}`}>
+          <CircleHelp size={13} aria-hidden />Guide
+        </button>
         <ThemeSwitch pref={theme.pref} onChange={theme.choose} />
         {phase === 'loading' && (
           <div className="basis-full" role="progressbar" aria-label="Cutouts loaded" aria-valuemin={0} aria-valuemax={slots.length} aria-valuenow={nOk + nErr}>
@@ -397,6 +411,7 @@ export default function App() {
 
         {/* centre: viewer */}
         <main className="min-w-0 p-2 sm:p-3 xl:flex xl:flex-col xl:overflow-y-auto xl:p-2">
+          {showGuide && <Guide onDismiss={dismissGuide} />}
           {phase === 'idle' && (
             <section aria-label="Getting started" className="border border-line bg-panel">
               <div className="border-b border-line px-3 py-2 text-[12px] text-ink">

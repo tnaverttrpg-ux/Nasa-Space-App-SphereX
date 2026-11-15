@@ -1,7 +1,7 @@
 // Pixel inspector: exact screen→grid mapping under zoom/pan, modes, marker placement, states.
 import { chromium } from 'playwright-core'
-import { LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
-const BASE = `${ORIGIN}/?ra=269.44629&dec=4.767917&band=D6`
+import { APP, LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
+const BASE = `${APP}?ra=269.44629&dec=4.767917&band=D6`
 const results = []
 const check = async (name, fn) => { try { results.push(['PASS', name, (await fn()) ?? '']) } catch (e) { results.push(['FAIL', name, String(e.message).split('\n')[0]]) } }
 const b = await chromium.launch(LAUNCH)

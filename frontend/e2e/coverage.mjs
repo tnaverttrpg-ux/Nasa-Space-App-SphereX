@@ -2,14 +2,20 @@
 // Every scientific check is made against an INDEPENDENT implementation (inverse gnomonic + spherical containment).
 // Prerequisites and env: see lib.mjs. Run: npm run test:e2e -- coverage
 import { chromium } from 'playwright-core'
-import { LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
+import { APP, LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
 const B = ORIGIN, RA = 269.44629, DEC = 4.767917
-const PAGE = `${B}/?ra=${RA}&dec=${DEC}&fov=0.1&band=D6&n=12`
+const PAGE = `${APP}?ra=${RA}&dec=${DEC}&fov=0.1&band=D6&n=12`
 const results = []
 const check = async (name, fn) => { try { results.push(['PASS', name, (await fn()) ?? '']) } catch (e) { results.push(['FAIL', name, String(e.message).split('\n')[0]]) } }
 const b = await chromium.launch(LAUNCH)
 const loaded = p => p.waitForFunction(() => /Loaded \d+\/\d+ frames/.test(document.querySelector('[role="status"]')?.textContent ?? ''), null, { timeout: 300000 })
-const toMap = async p => { await p.getByRole('tab', { name: 'Sky map' }).click(); await p.getByTestId('skymap').waitFor({ timeout: 10000 }) }
+// The map is display:none until its tab opens; it then measures itself and re-renders once with its real size.
+// Wait for that (viewBox aspect = rendered aspect), so geometry a test reads cannot change before its click lands.
+const mapSettled = p => p.waitForFunction(() => {
+  const e = document.querySelector('[data-testid="map-svg"]'), r = e?.getBoundingClientRect(), vb = e?.getAttribute('viewBox').split(' ').map(Number)
+  return !!r && r.width > 0 && Math.abs(vb[2] / vb[3] - r.width / r.height) < 1e-3
+}, null, { timeout: 10000 })
+const toMap = async p => { await p.getByRole('tab', { name: 'Sky map' }).click(); await p.getByTestId('skymap').waitFor({ timeout: 10000 }); await mapSettled(p) }
 const insp = async p => (await p.locator('dt', { hasText: 'Observation ID' }).locator('xpath=following-sibling::dd').innerText()).trim()
 const D2R = Math.PI / 180
 // independent inverse gnomonic (screen plane x = -ξ, y = -η, degrees) — textbook form, not the app's code
@@ -28,7 +34,7 @@ const clickPlane = async (p, [x, y]) => { const r = await p.getByTestId('map-svg
 const probe = async p => p.getByTestId('probe-coords').evaluate(e => [+e.dataset.ra, +e.dataset.dec])
 
 { // ---- unit checks on the live module: inversion + containment + scanline coverage
-  const p = await b.newPage(); await p.goto(B)
+  const p = await b.newPage(); await p.goto(APP)
   await check('unit: screen→sky inversion round-trips (incl. RA 0/360 and high Dec)', async () => {
     const r = await p.evaluate(async () => { const s = await import('/src/sky.ts'); const out = []
       for (const [ra0, dec0] of [[269.4, 4.8], [0.2, 20], [359.9, -35], [120, 82]]) for (const [x, y] of [[0, 0], [1.3, -0.7], [-2.2, 1.9], [0.01, 3.1]]) {
@@ -263,7 +269,7 @@ for (const scheme of ['dark', 'light']) {
 { // RA wraparound on real data: inspector + independent containment
   const p = await b.newPage({ viewport: { width: 1440, height: 1000 } })
   await p.route('**/api/frame?*', r => r.fulfill({ status: 504, json: { detail: 'not needed' } }))
-  await p.goto(`${B}/?ra=0.15&dec=20&fov=0.1&band=D6&n=2`); await loaded(p); await toMap(p)
+  await p.goto(`${APP}?ra=0.15&dec=20&fov=0.1&band=D6&n=2`); await loaded(p); await toMap(p)
   await check('RA wraparound: inspecting across 0°/360° matches independent spherical containment', async () => {
     const api = await (await p.request.get(`${B}/api/observations?ra=0.15&dec=20&band=D6&limit=2&include_all=true`)).json()
     const valid = api.all_observations.filter(o => o.footprint?.status === 'ok'), out = []

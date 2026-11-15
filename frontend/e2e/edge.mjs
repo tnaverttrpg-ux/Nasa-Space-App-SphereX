@@ -1,13 +1,13 @@
 // Browser check of the three UX additions on the Barnard D6 frame 2025W33_2C_0321_3 at FOV 0.5 (both themes).
 import { chromium } from 'playwright-core'
-import { LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
+import { APP, LAUNCH, OUT, report } from './lib.mjs'
 const S = OUT
 const results = []
 const check = async (name, fn) => { try { results.push(['PASS', name, (await fn()) ?? '']) } catch (e) { results.push(['FAIL', name, String(e.message).split('\n')[0]]) } }
 const b = await chromium.launch(LAUNCH)
 for (const scheme of ['dark', 'light']) {
   const p = await (await b.newContext({ colorScheme: scheme, viewport: { width: 1440, height: 1000 } })).newPage()
-  await p.goto(`${ORIGIN}/?ra=269.44629&dec=4.767917&fov=0.5&band=D6&n=10`)  // smallest sample containing _3
+  await p.goto(`${APP}?ra=269.44629&dec=4.767917&fov=0.5&band=D6&n=10`)  // smallest sample containing _3
   await p.waitForFunction(() => /Loaded \d+\/\d+ frames/.test(document.querySelector('[role="status"]')?.textContent ?? ''), null, { timeout: 500000 })
   // step to the 2025-08-15 20:50 frame
   for (let i = 0; i < 30; i++) {

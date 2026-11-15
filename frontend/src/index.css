@@ -22,6 +22,8 @@
   --diff-a: #e47889;      /* "brighter in A" as text */
   --diff-b: #7499e2;      /* "brighter in B" as text */
   --gaia: #4ade80;        /* Gaia catalogue as UI colour */
+  --cta: #b9926e;         /* primary call-to-action fill (homepage) */
+  --cta-ink: #17191a;     /* text on --cta (≈7:1) */
 }
 :root[data-theme="light"] {
   color-scheme: light;
@@ -40,6 +42,8 @@
   --diff-a: #be2b42;
   --diff-b: #3462bc;
   --gaia: #1f8a4c;
+  --cta: #815f43;
+  --cta-ink: #ffffff;     /* ≈5.7:1 */
 }
 
 @theme inline {
@@ -58,6 +62,8 @@
   --color-diff-a: var(--diff-a);
   --color-diff-b: var(--diff-b);
   --color-gaia: var(--gaia);
+  --color-cta: var(--cta);
+  --color-cta-ink: var(--cta-ink);
   --font-sans: "Inter", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
   --radius-sm: 2px;
@@ -79,6 +85,14 @@ body {
 input[type="range"], input[type="checkbox"] { accent-color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 ::placeholder { color: var(--ink-3); opacity: 1; }
+
+/* Homepage only: one gentle entrance and smooth in-page scrolling, both only when the visitor allows motion.
+   Scoped to the homepage so the Explorer's programmatic scrolling stays instant. */
+@media (prefers-reduced-motion: no-preference) {
+  html:has(.home-page) { scroll-behavior: smooth; }
+  .fade-up { animation: fade-up 0.6s ease-out both; }
+}
+@keyframes fade-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 /* Toasts sit below the toolbar (offset in App.tsx). Sonner slides new toasts in from above, which briefly crossed
    the toolbar and swallowed clicks; clip the toaster at the toolbar edge (8 px margin keeps the close button). */

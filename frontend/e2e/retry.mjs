@@ -1,7 +1,7 @@
 // Non-blocking retry: tabs stay usable, retries survive view switches, progress is inline, toasts sit below the toolbar.
 import { chromium } from 'playwright-core'
-import { LAUNCH, ORIGIN, report } from './lib.mjs'
-const PAGE = `${ORIGIN}/?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=12`
+import { APP, LAUNCH, report } from './lib.mjs'
+const PAGE = `${APP}?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=12`
 const results = []
 const check = async (name, fn) => { try { results.push(['PASS', name, (await fn()) ?? '']) } catch (e) { results.push(['FAIL', name, String(e.message).split('\n')[0]]) } }
 const b = await chromium.launch(LAUNCH)

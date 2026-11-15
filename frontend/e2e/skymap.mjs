@@ -1,13 +1,19 @@
 // Sky coverage map: projection maths, real footprint geometry, wraparound, overlap, selection, loading, robustness.
 import { chromium } from 'playwright-core'
-import { LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
+import { APP, LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
 const B = `${ORIGIN}`, RA = 269.44629, DEC = 4.767917
-const PAGE = `${B}/?ra=${RA}&dec=${DEC}&fov=0.1&band=D6&n=12`
+const PAGE = `${APP}?ra=${RA}&dec=${DEC}&fov=0.1&band=D6&n=12`
 const results = []
 const check = async (name, fn) => { try { results.push(['PASS', name, (await fn()) ?? '']) } catch (e) { results.push(['FAIL', name, String(e.message).split('\n')[0]]) } }
 const b = await chromium.launch(LAUNCH)
 const loaded = p => p.waitForFunction(() => /Loaded \d+\/\d+ frames/.test(document.querySelector('[role="status"]')?.textContent ?? ''), null, { timeout: 300000 })
-const toMap = async p => { await p.getByRole('tab', { name: 'Sky map' }).click(); await p.getByTestId('skymap').waitFor({ timeout: 10000 }) }
+// The map is display:none until its tab opens; it then measures itself and re-renders once with its real size.
+// Wait for that (viewBox aspect = rendered aspect), so geometry a test reads cannot change before its click lands.
+const mapSettled = p => p.waitForFunction(() => {
+  const e = document.querySelector('[data-testid="map-svg"]'), r = e?.getBoundingClientRect(), vb = e?.getAttribute('viewBox').split(' ').map(Number)
+  return !!r && r.width > 0 && Math.abs(vb[2] / vb[3] - r.width / r.height) < 1e-3
+}, null, { timeout: 10000 })
+const toMap = async p => { await p.getByRole('tab', { name: 'Sky map' }).click(); await p.getByTestId('skymap').waitFor({ timeout: 10000 }); await mapSettled(p) }
 const insp = async p => (await p.locator('dt', { hasText: 'Observation ID' }).locator('xpath=following-sibling::dd').innerText()).trim()
 const D2R = Math.PI / 180
 // independent gnomonic implementation (screen plane: x = -ξ, y = -η)
@@ -17,7 +23,7 @@ const gno = (ra0, dec0, ra, dec) => { const d0 = dec0 * D2R, d = dec * D2R, da =
 const samePts = (a, b2, tol = 1e-9) => a.length === b2.length && [...a].sort((p, q) => p[0] - q[0] || p[1] - q[1]).every((p, i) => { const q = [...b2].sort((m, n) => m[0] - n[0] || m[1] - n[1])[i]; return Math.abs(p[0] - q[0]) < tol && Math.abs(p[1] - q[1]) < tol })
 
 { // ---- projection maths on the live module
-  const p = await b.newPage(); await p.goto(B)
+  const p = await b.newPage(); await p.goto(APP)
   await check('projection: known points (target, 1° N, 1° E at Dec 0, poles), round trip', async () => {
     const r = await p.evaluate(async () => { const s = await import('/src/sky.ts')
       return { t: s.tanProject(120, 30, 120, 30), n: s.tanProject(10, 0, 10, 1), e: s.tanProject(10, 0, 11, 0), far: s.tanProject(0, 0, 90, 0), back: s.tanProject(0, 0, 180, 0),
@@ -154,7 +160,7 @@ for (const scheme of ['dark', 'light']) {
 { // RA wraparound on real archive data (target near RA 0); frame downloads blocked, not needed for the map
   const p = await b.newPage({ viewport: { width: 1440, height: 1000 } })
   await p.route('**/api/frame?*', r => r.fulfill({ status: 504, json: { detail: 'not needed' } }))
-  await p.goto(`${B}/?ra=0.15&dec=20&fov=0.1&band=D6&n=2`); await loaded(p); await toMap(p)
+  await p.goto(`${APP}?ra=0.15&dec=20&fov=0.1&band=D6&n=2`); await loaded(p); await toMap(p)
   await check('real footprints straddling RA 0°/360° project as compact polygons around the target', async () => {
     const api = await (await p.request.get(`${B}/api/observations?ra=0.15&dec=20&band=D6&limit=2&include_all=true`)).json()
     const ras = api.all_observations.flatMap(o => o.footprint.vertices?.map(v => v[0]) ?? [])

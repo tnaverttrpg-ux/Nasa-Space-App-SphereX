@@ -1,7 +1,7 @@
 import { chromium } from 'playwright-core'
-import { LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
+import { APP, LAUNCH, OUT, report } from './lib.mjs'
 const S = OUT
-const BASE = `${ORIGIN}/?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=12`
+const BASE = `${APP}?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=12`
 const DARK_BG = 'rgb(23, 25, 26)', LIGHT_BG = 'rgb(214, 215, 211)'
 const results = []
 const check = async (name, fn) => { try { results.push(['PASS', name, (await fn()) ?? '']) } catch (e) { results.push(['FAIL', name, String(e.message).split('\n')[0]]) } }

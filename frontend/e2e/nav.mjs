@@ -1,8 +1,8 @@
 // Advanced viewer navigation: zoom/pan/sync/difference display controls. Reads real CSS transforms.
 import { chromium } from 'playwright-core'
-import { LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
+import { APP, LAUNCH, OUT, report } from './lib.mjs'
 const S = OUT
-const URL = `${ORIGIN}/?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=12`
+const URL = `${APP}?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=12`
 const results = []
 const check = async (name, fn) => { try { results.push(['PASS', name, (await fn()) ?? '']) } catch (e) { results.push(['FAIL', name, String(e.message).split('\n')[0]]) } }
 const b = await chromium.launch(LAUNCH)

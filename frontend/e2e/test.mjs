@@ -1,6 +1,6 @@
 // Real-browser functional test of SPHERE TRACK (Edge via playwright-core).
 import { chromium } from 'playwright-core'
-import { LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
+import { APP, LAUNCH, ORIGIN, OUT, report } from './lib.mjs'
 const S = OUT
 const BASE = `${ORIGIN}`
 const results = []
@@ -18,7 +18,7 @@ const apiCalls = []
 page.on('request', r => { if (r.url().includes('/api/')) apiCalls.push(r.url().replace(BASE, '')) })
 
 await check('initial dashboard loads', async () => {
-  await page.goto(BASE)
+  await page.goto(APP)
   await page.getByText('SPHERE TRACK', { exact: true }).first().waitFor()
   await page.screenshot({ path: S + '01-initial.png' })
 })
@@ -154,14 +154,14 @@ await check('frame failure -> retry button recovers frame', async () => {
   await page.unroute('**/api/frame?*')
 })
 await check('demo mode clearly labelled', async () => {
-  await page.goto(BASE + '/?demo=1')
+  await page.goto(APP + '?demo=1')
   await page.getByText(/DEMO MODE\./).first().waitFor({ timeout: 10000 })
   await page.getByText(/Synthetic demo · not SPHEREx/).first().waitFor()
   await page.getByText(/not SPHEREx/i).first().waitFor()
 })
 await check('mobile 390px: no horizontal scroll, viewer usable', async () => {
   const m = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
-  await m.goto(BASE + '/?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=8')
+  await m.goto(APP + '?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=8')
   await m.waitForFunction(() => /Loaded (\d+)\/\1/.test(document.body.innerText), null, { timeout: 120000 })
   const over = await m.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   await m.screenshot({ path: S + '07-mobile.png', fullPage: true })
@@ -169,13 +169,17 @@ await check('mobile 390px: no horizontal scroll, viewer usable', async () => {
 })
 await check('desktop 1440x900: image ≥550px, legend + playback + timeline on screen (seq & diff)', async () => {
   const d = await browser.newPage({ viewport: { width: 1440, height: 900 } })
-  await d.goto(BASE + '/?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=12')
+  await d.goto(APP + '?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=12')
   await d.waitForFunction(() => /Loaded (\d+)\/\1/.test(document.body.innerText), null, { timeout: 120000 })
   const onScreen = sel => d.evaluate(s => { const r = document.querySelector(s).getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight }, sel)
   const out = []
   for (const mode of ['Sequence', 'Difference']) {
     await d.getByRole('tab', { name: mode }).click()
-    if (mode === 'Difference') await d.getByText('Red = brighter in observation A').waitFor({ timeout: 60000 })
+    if (mode === 'Difference') {
+      await d.getByText('Red = brighter in observation A').waitFor({ timeout: 60000 })
+      // the legend appears with the mode; the figures only once /api/diff has returned, so wait for the image itself
+      await d.getByAltText('Difference image, A minus k times B').waitFor({ timeout: 60000 })
+    }
     const img = await d.evaluate(() => Math.max(...[...document.querySelectorAll('figure')].map(f => f.getBoundingClientRect().width)))
     for (const s of ['[aria-label="Observation timeline"]', '[aria-label="Next frame"]']) if (!(await onScreen(s))) throw new Error(`${mode}: ${s} off screen`)
     if (mode === 'Difference' && !(await d.getByText('Blue = brighter in observation B').isVisible())) throw new Error('legend hidden')
@@ -187,7 +191,7 @@ await check('desktop 1440x900: image ≥550px, legend + playback + timeline on s
 })
 await check('mobile 390px: sticky playback row stays with viewer, never over metadata', async () => {
   const m = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
-  await m.goto(BASE + '/?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=8')
+  await m.goto(APP + '?ra=269.44629&dec=4.767917&fov=0.1&band=D6&n=8')
   await m.waitForFunction(() => /Loaded (\d+)\/\1/.test(document.body.innerText), null, { timeout: 120000 })
   const top = await m.evaluate(() => document.querySelector('[aria-label="Observation viewer"]').getBoundingClientRect().top + scrollY)
   await m.evaluate(t => scrollTo(0, t - 600), top)
@@ -199,7 +203,7 @@ await check('mobile 390px: sticky playback row stays with viewer, never over met
   if (over) throw new Error('playback row overlaps metadata')
 })
 await check('empty-state example buttons', async () => {
-  await page.goto(BASE)
+  await page.goto(APP)
   await page.getByRole('button', { name: /Example: Barnard/ }).waitFor({ timeout: 5000 })
   await page.getByRole('button', { name: /Example: WISE 0855/ }).waitFor()
 })

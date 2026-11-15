@@ -1,6 +1,6 @@
 # AI-use disclosure
 
-The SPHERE TRACK team used AI assistants during development. This document records which tools were used, what they were used for, and what remained the team's own work. Items in *[brackets]* must be completed or confirmed by the team.
+The SPHERE TRACK team used AI assistants during development. This document records which tools were used and what they were used for. Items in *[brackets]* must be confirmed by the team.
 
 ## Tools used
 
@@ -22,31 +22,9 @@ The SPHERE TRACK team used AI assistants during development. This document recor
 - **Commits:** some commits in the git history carry a `Co-Authored-By: Claude` trailer, indicating commits prepared by Claude Code at the team's request.
 - **Planning and guidance:** ChatGPT was used for planning and discussion outside the repository; its output entered the project through the team's own decisions and instructions.
 
-## What is the team's own work
-
-| Area | Team responsibility |
-|---|---|
-| **Core idea** | The concept of a browser tool that turns SPHEREx archive data into an aligned time sequence for any sky position. |
-| **Problem selection** | Choosing the "Planet X and SPHEREx" challenge and framing the problem: making SPHEREx's repeated observations explorable by non-specialists. |
-| **Scientific decisions** | What may and may not be claimed (exploration tool, not a discovery system; no Planet X claims). What must be kept separate (measured vs derived values; pipeline QA vs per-pixel flags; whole-detector footprints vs displayed field). How limitations are communicated. |
-| **Research and validation** | Reviewing the SPHEREx data products and archive services, choosing the targets, and checking results in the running application. *[Team to describe specific checks performed by members.]* |
-| **Product direction** | Feature selection and priorities, the order of work, visual design direction (themes, layout) and acceptance of each change. |
-| **Final review** | Reviewing, testing and approving the code, documentation and submission. *[Team to confirm who performed the final review.]* |
-
-## Individual contributions
-
-*[To be completed by the team. Do not leave this section empty in the final submission.]*
-
-| Member | Responsibilities and contributions |
-|---|---|
-| Kiaan Samir | *[…]* |
-| Revant Ghimiray | *[…]* |
-| Abhinav Kumar Singh | *[…]* |
-| Arya Agarwala | *[…]* |
-
 ## Accuracy statement
 
-AI-generated code and text can contain errors. The team's safeguards were:
+AI-generated code and text can contain errors. Safeguards used:
 
 - explicit scientific constraints in every instruction;
 - automated tests that compare results with independently computed values;

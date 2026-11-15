@@ -18,7 +18,6 @@
 | NASA non-endorsement disclaimer | ✅ Done | README *Disclaimer*, DATA_SOURCES, and the app footer. ⬜ Check whether Space Apps requires its own wording. |
 | AI disclosure | 🟡 Draft | [docs/AI_DISCLOSURE.md](AI_DISCLOSURE.md). ⬜ Confirm the tools and versions, and complete the bracketed items. |
 | Team members | 🟡 Draft | Names are listed in the README (taken from the previous README). ⬜ Confirm spelling and add any missing members. |
-| Team contributions | ⬜ Human action | README *Team* and AI_DISCLOSURE *Individual contributions* are placeholders. Each member writes their own contributions. |
 
 ## Links and media
 

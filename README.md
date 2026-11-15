@@ -232,16 +232,11 @@ The latest verified results (2026-11-15) were 90/90 backend tests and 227/227 br
 
 ## Team
 
-| Member | Role and contributions |
-|---|---|
-| Kiaan Samir | *[to be completed by the team]* |
-| Revant Ghimiray | *[to be completed by the team]* |
-| Abhinav Kumar Singh | *[to be completed by the team]* |
-| Arya Agarwala | *[to be completed by the team]* |
+Kiaan Samir · Revant Ghimiray · Abhinav Kumar Singh · Arya Agarwala
 
 ## AI-use disclosure
 
-AI tools assisted development: Claude Code (implementation, debugging, refactoring, testing) and ChatGPT (planning, architecture discussion, troubleshooting, explanations, UI/UX guidance). The core idea, problem selection, scientific decisions, research and validation, product direction and final review are the team's. Details: [docs/AI_DISCLOSURE.md](docs/AI_DISCLOSURE.md).
+AI tools assisted development: Claude Code (implementation, debugging, refactoring, testing) and ChatGPT (planning, architecture discussion, troubleshooting, explanations, UI/UX guidance). Details: [docs/AI_DISCLOSURE.md](docs/AI_DISCLOSURE.md).
 
 ## Disclaimer
 

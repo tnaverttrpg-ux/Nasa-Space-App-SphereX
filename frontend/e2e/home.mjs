@@ -40,8 +40,8 @@ for (const scheme of ['dark', 'light']) {
   await check(`${T} sections present: how it works (3 steps), 6 features, investigation, science, footer disclaimer`, async () => {
     const steps = await p.locator('#how ol > li').count(), feats = await p.locator('#features figure').count()
     const inv = await p.locator('#investigation').innerText(), foot = await p.locator('footer').innerText()
-    if (steps !== 3 || feats !== 6 || !/not.*been matched to any catalogued satellite/s.test(inv) || !/not endorsed by, sponsored by or affiliated with NASA/.test(foot) || !/to be added by the team/.test(foot))
-      throw new Error(JSON.stringify({ steps, feats })); return '3 steps, 6 features, identity not claimed, non-endorsement, team placeholder'
+    if (steps !== 3 || feats !== 6 || !/not.*been matched to any catalogued satellite/s.test(inv) || !/not endorsed by, sponsored by or affiliated with NASA/.test(foot) || !/Team: Kiaan Samir/.test(foot) || /contribution|role/i.test(foot))
+      throw new Error(JSON.stringify({ steps, feats })); return '3 steps, 6 features, identity not claimed, non-endorsement, team names without roles'
   })
   await check(`${T} no archive or API traffic from the homepage, even after scrolling everything into view`, async () => {
     for (let y = 0; y < 8000; y += 500) { await jump(p, y); await p.waitForTimeout(60) }

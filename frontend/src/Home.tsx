@@ -327,7 +327,6 @@ export default function Home() {
               <li><a href={EXPLORER} className="hover:text-ink">Explorer</a></li>
             </ul>
             <p className="mt-4 text-ink-2">Team: Kiaan Samir · Revant Ghimiray · Abhinav Kumar Singh · Arya Agarwala.</p>
-            <p className="mt-1 text-ink-2">Roles and contributions: <span className="italic">to be added by the team</span>.</p>
           </div>
           <div>
             <p className="font-semibold text-ink">Data</p>
